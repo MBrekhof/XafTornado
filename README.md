@@ -40,17 +40,26 @@ XafTornado.Module/          Platform-agnostic core (business objects, services, 
 XafTornado.Blazor.Server/   Blazor Server UI
   Services/
     BlazorNavigationService       INavigationService impl (queue-based for UI thread safety)
+  Controllers/
+    NavigationExecutorController  Dequeues nav/filter/save/close on Blazor UI thread
   Editors/AIChatViewItem/         AIChat.razor (DxAIChat component)
+  Components/
+    AISidePanel.razor             Collapsible AI chat side panel
 
 XafTornado.Win/             WinForms UI
-  Editors/                        AIChatControl integration
+  Services/
+    WinNavigationService          INavigationService impl for WinForms (queue-based)
+  Controllers/
+    AISidePanelController         Docked AIChatControl panel (right side, resizable)
+    WinNavigationExecutorController  Dequeues nav/filter/save/close on WinForms UI thread
+  Editors/                        AIChatControl integration (ViewItem wrapper)
 ```
 
 ### How It Works
 
-1. **Startup** — `ServiceCollectionExtensions.AddAIServices()` registers all services. `SchemaDiscoveryService` reflects over `ITypesInfo` to discover the data model. The system prompt and AI tools are generated dynamically from this metadata.
+1. **Startup** — `ServiceCollectionExtensions.AddAIServices()` registers all services. `SchemaDiscoveryService` reflects over `ITypesInfo` to discover the data model. The system prompt and AI tools are generated dynamically from this metadata. In WinForms, schema discovery is re-run after `Application.Setup()` to ensure all XAF types are registered.
 
-2. **Multi-Provider Init** — `AIChatService` lazy-initializes a `TornadoApi` client from API keys configured in `appsettings.json`. Multiple providers can be configured simultaneously; the correct one is auto-selected based on the model name prefix.
+2. **Multi-Provider Init** — `AIChatService` lazy-initializes a `TornadoApi` client from API keys configured in `appsettings.json` (or `appsettings.Development.json` for local keys). Multiple providers can be configured simultaneously; the correct one is auto-selected based on the model name prefix.
 
 3. **AI Tools** — `AIToolsProvider` exposes 12 tools to the LLM:
    - `list_entities` — Returns all entity names with descriptions
@@ -67,9 +76,11 @@ XafTornado.Win/             WinForms UI
 
 5. **Chat Flow** — User messages flow through `DxAIChat` (Blazor) or `AIChatControl` (WinForms) → `AIChatClient` (IChatClient adapter) → `AIChatService` → LLMTornado → AI model. The response streams back through the same chain and is rendered as formatted HTML.
 
+6. **Platform-Specific ObjectSpace Handling** — In Blazor, AI tools create ObjectSpaces via `INonSecuredObjectSpaceFactory` from DI scopes (AsyncLocal carries the XAF context). In WinForms, this factory doesn't work from manual DI scopes, so tools use `XafApplication.CreateObjectSpace()` directly, dispatched to the UI thread via `SynchronizationContext.Send()`.
+
 For a detailed step-by-step walkthrough of how a user question becomes a data-driven answer — including what the AI model sees, how it decides which tool to call, and how the query executes against the database — see **[Behind the Scenes](BEHIND_THE_SCENES.md)**.
 
-For a step-by-step guide on adding the AI assistant to your own XAF application — see **[How to Implement](how_to_implement.md)**.
+For a step-by-step guide on adding the AI assistant to your own XAF application — see **[How to Implement](HOW_TO_IMPLEMENT.md)**.
 
 ## Data Model
 
@@ -111,13 +122,11 @@ dotnet build XafTornado.slnx
 
 ### 2. Configure API keys
 
-Add an `"AI"` section to `appsettings.json` (or `appsettings.Development.json`) with your provider API keys:
+Create `appsettings.Development.json` (gitignored) alongside `appsettings.json` in both UI projects with your provider API keys:
 
 ```json
 {
   "AI": {
-    "Model": "claude-sonnet-4-6",
-    "DefaultProvider": "anthropic",
     "ApiKeys": {
       "anthropic": "sk-ant-...",
       "openai": "sk-..."
@@ -126,7 +135,7 @@ Add an `"AI"` section to `appsettings.json` (or `appsettings.Development.json`) 
 }
 ```
 
-You only need a key for the provider(s) you want to use. See the [Configuration](#configuration) section for all available settings.
+You only need a key for the provider(s) you want to use. The Development file overrides the base `appsettings.json` and is excluded from source control. See the [Configuration](#configuration) section for all available settings.
 
 ### 3. Run
 
@@ -140,7 +149,7 @@ dotnet run --project XafTornado/XafTornado.Win
 
 Log in with user **Admin** (empty password) or **User** (empty password).
 
-Navigate to the **AI Chat** item in the sidebar to start chatting with the AI assistant.
+On Blazor Server, navigate to the **AI Chat** item in the sidebar or expand the AI side panel. On WinForms, the AI chat panel is docked on the right side of the main window and can be resized via the splitter.
 
 ## Configuration
 

@@ -45,12 +45,25 @@ Copy the entire `Services/` folder from `XafTornado.Module` into your module pro
 | `AIOptions.cs` | Configuration model bound from the `"AI"` section in `appsettings.json`. |
 | `ServiceCollectionExtensions.cs` | `AddAIServices()` extension method that registers all services with DI. |
 
-**For Blazor Server**, also copy:
+Also copy the platform-agnostic interface and logging:
+
+| File | Purpose |
+|------|---------|
+| `INavigationService.cs` | Platform-agnostic interface for navigation, filtering, save, and close. |
+| `AILogStore.cs` | In-memory log store for AI debug logging. |
+| `AILoggerProvider.cs` | Custom logger provider that filters to AI-related categories. |
+
+**For Blazor Server**, also copy from `XafTornado.Blazor.Server/Services/`:
 
 | File | Purpose |
 |------|---------|
 | `BlazorNavigationService.cs` | `INavigationService` implementation using a producer/consumer queue for UI-thread-safe navigation, filtering, save, and close operations. |
-| `INavigationService.cs` | Platform-agnostic interface for navigation, filtering, save, and close. |
+
+**For WinForms**, also copy from `XafTornado.Win/Services/`:
+
+| File | Purpose |
+|------|---------|
+| `WinNavigationService.cs` | `INavigationService` implementation for WinForms with queue-based navigation, filtering, save, and close. |
 
 **Important:** Update the namespace in `SchemaDiscoveryService.cs` to match your project:
 
@@ -67,22 +80,37 @@ Copy `BusinessObjects/AIChat.cs` — this is the XAF non-persistent `DomainCompo
 
 ## Step 4: Copy the Controllers
 
-Copy these controllers from `Controllers/`:
+Copy these **shared controllers** from `XafTornado.Module/Controllers/`:
 
 | File | Purpose |
 |------|---------|
 | `SelectAIModelController.cs` | Adds a toolbar action to switch AI models at runtime. Clears conversation history on model change. |
 | `ActiveViewTrackingController.cs` | Updates `ActiveViewContext` whenever the user navigates to a new view. Required for `get_active_view` and `update_entity` tools. |
-| `NavigationExecutorController.cs` | *(Blazor only)* Dequeues navigation/filter/save/close requests from `BlazorNavigationService` and executes them on the XAF UI thread. |
 
-## Step 5: Copy the UI Editors
+**For Blazor Server**, also copy from `XafTornado.Blazor.Server/Controllers/`:
+
+| File | Purpose |
+|------|---------|
+| `NavigationExecutorController.cs` | Dequeues navigation/filter/save/close requests from `BlazorNavigationService` and executes them on the XAF UI thread. |
+
+**For WinForms**, also copy from `XafTornado.Win/Controllers/`:
+
+| File | Purpose |
+|------|---------|
+| `AISidePanelController.cs` | WindowController that adds a docked `AIChatControl` panel (right side, resizable) to the main window. |
+| `WinNavigationExecutorController.cs` | Dequeues navigation/filter/save/close requests from `WinNavigationService` and executes them on the WinForms UI thread. Handles `Window.TemplateChanged` for deferred UI control capture. |
+
+## Step 5: Copy the UI Components
 
 **For Blazor Server**, copy:
 - `Editors/AIChatViewItem/AIChat.razor` — The Blazor component wrapping `DxAIChat`
 - `Editors/AIChatViewItem/AIChatViewItem.cs` — The XAF ViewItem that hosts the Razor component
+- `Components/AISidePanel.razor` — Collapsible AI chat side panel
 
 **For WinForms**, copy:
 - `Editors/AIChatViewItemWin.cs` — The XAF ViewItem wrapping the DevExpress `AIChatControl`
+
+**Note:** The WinForms side panel is handled by `AISidePanelController` (Step 4), not a separate editor.
 
 ## Step 6: Copy the Attribute Files
 
@@ -101,22 +129,72 @@ Copy from `Attributes/`:
 services.AddAIServices(builder.Configuration);
 ```
 
-**WinForms** — in your `Startup.cs`:
+**WinForms** — in your `Startup.cs` (ApplicationBuilder):
 
 ```csharp
-// In ConfigureServices or equivalent:
-services.AddAIServices(configuration);
+// Build configuration from appsettings.json + Development overlay
+var configuration = new ConfigurationBuilder()
+    .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
+    .AddJsonFile("appsettings.json", optional: true, reloadOnChange: true)
+    .AddJsonFile("appsettings.Development.json", optional: true, reloadOnChange: true)
+    .Build();
+
+// Register AI services
+builder.Services.AddAIServices(configuration);
+builder.Services.AddDevExpressAI();
+
+// Register WinForms navigation service
+builder.Services.AddSingleton<WinNavigationService>();
+builder.Services.AddSingleton<INavigationService>(sp => sp.GetRequiredService<WinNavigationService>());
 ```
+
+**WinForms** — in your `Program.cs`, after `winApplication.Setup()`:
+
+```csharp
+winApplication.Setup();
+
+// Re-discover schema now that XAF types are fully registered.
+var schemaService = winApplication.ServiceProvider.GetRequiredService<SchemaDiscoveryService>();
+schemaService.InvalidateCache();
+var aiService = winApplication.ServiceProvider.GetRequiredService<AIChatService>();
+aiService.SystemMessage = schemaService.GenerateSystemPrompt();
+
+// Give AI tools a reference to the application + UI sync context so they
+// can create ObjectSpaces on the UI thread (required in WinForms).
+var toolsProvider = winApplication.ServiceProvider.GetRequiredService<AIToolsProvider>();
+toolsProvider.Application = winApplication;
+toolsProvider.UiContext = SynchronizationContext.Current;
+
+winApplication.Start();
+```
+
+**Important WinForms note:** In WinForms, `INonSecuredObjectSpaceFactory` does not work from manually-created DI scopes because XAF's `SimpleValueManager` doesn't propagate application context. The `Application` and `UiContext` properties on `AIToolsProvider` enable ObjectSpace creation via `XafApplication.CreateObjectSpace()` dispatched to the UI thread.
 
 ## Step 8: Configure appsettings.json
 
-Add the `"AI"` section with your provider API keys:
+Add the `"AI"` section to your base `appsettings.json` (without secrets):
 
 ```json
 {
   "AI": {
     "Model": "claude-sonnet-4-6",
     "DefaultProvider": "anthropic",
+    "MaxOutputTokens": 16384,
+    "MaxToolIterations": 10,
+    "TimeoutSeconds": 120,
+    "ApiKeys": {
+      "anthropic": "",
+      "openai": ""
+    }
+  }
+}
+```
+
+Create `appsettings.Development.json` (add to `.gitignore`) with your actual API keys:
+
+```json
+{
+  "AI": {
     "ApiKeys": {
       "anthropic": "sk-ant-your-key-here",
       "openai": "sk-your-key-here"
@@ -125,7 +203,7 @@ Add the `"AI"` section with your provider API keys:
 }
 ```
 
-You only need keys for the providers you want to use. For development, use `appsettings.Development.json` to keep keys out of source control.
+You only need keys for the providers you want to use. The Development file overrides the base settings and is excluded from source control.
 
 ### Full Configuration Reference
 
@@ -142,7 +220,7 @@ You only need keys for the providers you want to use. For development, use `apps
 
 1. Build your application
 2. Run it and log in
-3. Navigate to the **AI Chat** item in the sidebar
+3. **Blazor**: Navigate to the **AI Chat** item in the sidebar or expand the AI side panel. **WinForms**: The AI chat panel is docked on the right side of the main window.
 4. Ask: *"What entities are available in the database?"*
 5. The AI should list all your business objects with their descriptions
 6. Try: *"Open the customers list"* — the AI should navigate the app

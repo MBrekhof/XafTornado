@@ -26,22 +26,19 @@ AIChatClient.GetStreamingResponseAsync()
 
 **Relevant file:** `Module/Services/AIChatClient.cs`
 
-## Step 3: `AIChatService` Creates a LLMTornado Session
+## Step 3: `AIChatService` Sends the Request via LLMTornado
 
 Inside `AIChatService.AskAsync()`, the following happens:
 
-1. **Starts the SDK client** if not already running — `EnsureStartedAsync()` calls `_client.StartAsync()`, which authenticates with GitHub via CLI credentials or a Personal Access Token.
+1. **Initializes the TornadoApi client** if not already running — `EnsureInitialized()` creates a `TornadoApi` instance from API keys configured in `appsettings.json`, with support for multiple providers (Anthropic, OpenAI, Google, Mistral, etc.).
 
-2. **Builds a `SessionConfig`** containing three critical pieces:
-   - The AI **model** (e.g. `gpt-4o`, configurable at runtime)
-   - The **tools** — the three `AIFunction` objects from `AIToolsProvider` (`list_entities`, `query_entity`, `create_entity`)
-   - The **system message** — the dynamically generated prompt from `SchemaDiscoveryService` that describes all entities, their properties, relationships, and enum values
+2. **Builds the chat request** containing:
+   - The AI **model** (e.g. `claude-sonnet-4-6`, configurable at runtime)
+   - The **tools** — the 12 `AIFunction` objects from `AIToolsProvider` converted to LLMTornado `Tool` definitions
+   - The **system message** — the dynamically generated prompt from `SchemaDiscoveryService` that describes all entities with their descriptions
+   - The **conversation history** — up to 50 message pairs for context continuity
 
-3. **Creates a session** with the LLMTornado: `_client.CreateSessionAsync(config)`
-
-4. **Subscribes to events** — listening for `AssistantMessageDeltaEvent` (response chunks), `SessionIdleEvent` (response complete), and `SessionErrorEvent` (failures)
-
-5. **Sends the user's prompt** via `session.SendAsync()`
+3. **Sends the request** via `GetResponseRich()` with a Polly retry pipeline (3 attempts, exponential backoff) for resilience
 
 **Relevant file:** `Module/Services/AIChatService.cs`
 
@@ -66,7 +63,7 @@ The LLMTornado packages and sends to the AI model (e.g. GPT-4o):
   ...
   ```
 
-- The **tool definitions** — JSON schemas describing the three available tools with their parameters and descriptions
+- The **tool definitions** — JSON schemas describing the 12 available tools with their parameters and descriptions
 
 - The **user's question** — `"Which employees are in the Sales department?"`
 
@@ -89,9 +86,9 @@ The AI reads the system prompt, understands the schema, and decides it needs to 
 The AI chose `query_entity` because it understood:
 - The user is asking *about* employees (not creating or listing schema)
 - The filter should be on the `Department` relationship with value `Sales`
-- It knows `Department` is a valid relationship on `Employee` because the system prompt told it so
+- It knows `Department` is a valid relationship on `Employee` because it called `describe_entity` first (two-tier discovery)
 
-The **LLMTornado handles tool execution automatically** — it matches the tool call name to the registered `AIFunction` and invokes it with the provided arguments.
+**`AIChatService` executes tools in a loop** — it receives the tool call from the model, matches it to the registered `AIFunction`, invokes it, feeds the result back to the model, and repeats until the model produces a final text response (up to `MaxToolIterations`).
 
 ## Step 6: `AIToolsProvider.QueryEntity()` Executes
 
@@ -105,13 +102,13 @@ var entityInfo = _schemaService.Schema.FindEntity("Employee");
 
 Returns the `EntityInfo` for Employee — including all its scalar properties (FirstName, LastName, Title, etc.) and relationships (Department, Orders, Territories, DirectReports).
 
-### 6b. Create a Scoped ObjectSpace
+### 6b. Create an ObjectSpace
 
 ```csharp
 using var sos = GetObjectSpace(entityType);
 ```
 
-Creates a DI scope, obtains an `INonSecuredObjectSpaceFactory`, and creates an `IObjectSpace` for the Employee type. This is the standard XAF data access pattern — the ObjectSpace wraps EF Core's DbContext and handles the database connection.
+Creates an `IObjectSpace` for the Employee type. In Blazor, this uses a DI scope with `INonSecuredObjectSpaceFactory`. In WinForms, this uses `XafApplication.CreateObjectSpace()` dispatched to the UI thread (because XAF's `SimpleValueManager` doesn't propagate application context to background threads). The ObjectSpace wraps EF Core's DbContext and handles the database connection.
 
 ### 6c. Load All Employee Objects
 
@@ -174,7 +171,7 @@ The AI decides the presentation format — it might use tables, bullet lists, or
 
 ## Step 8: Response Streams Back to the UI
 
-The AI's response arrives via `AssistantMessageDeltaEvent` events, collected in a `StringBuilder`. When the `SessionIdleEvent` fires, the response is complete.
+The AI's response is returned by `GetResponseRich()` after the tool loop completes. The full text response is extracted from the final model reply.
 
 The response flows back up the entire chain:
 
@@ -202,13 +199,13 @@ AIChatClient (IChatClient adapter)
   │  extracts last user message as plain text
   ▼
 AIChatService.AskAsync()
-  │  creates session with: model + tools + system prompt
+  │  sends: model + tools + system prompt + conversation history
   ▼
-LLMTornado → AI Model (GPT-4o / Claude / Gemini / etc.)
+LLMTornado → AI Model (Claude / GPT-4o / Gemini / etc.)
   │
-  │  AI reads system prompt (entity schema)
+  │  AI reads system prompt (entity names + descriptions)
   │  AI reads user question
-  │  AI decides: "I need to call query_entity"
+  │  AI decides: "I need to call describe_entity then query_entity"
   │
   ▼
 Tool call: query_entity("Employee", "Department=Sales")
@@ -225,7 +222,7 @@ Tool result returned to AI Model
   │  AI composes a formatted answer with the data
   │
   ▼
-Response streams back via events
+Response returned after tool loop completes
   │
   ▼
 AIChatClient → ChatResponseUpdate
@@ -245,6 +242,6 @@ User sees the answer
 
 - **Filtering by relationship uses display text matching.** When the user says "Sales department", the tool resolves this by reading each Employee's Department object and comparing its display name. This is powered by `GetObjectDisplayText()` which tries common name properties.
 
-- **XAF ObjectSpace handles all data access.** The tools use `INonSecuredObjectSpaceFactory` to create short-lived ObjectSpaces scoped to each tool call. This follows standard XAF patterns and ensures proper EF Core lifecycle management.
+- **XAF ObjectSpace handles all data access.** In Blazor, tools use `INonSecuredObjectSpaceFactory` via DI scopes. In WinForms, tools use `XafApplication.CreateObjectSpace()` dispatched to the UI thread. Both create short-lived ObjectSpaces per tool call, ensuring proper EF Core lifecycle management.
 
-- **Schema discovery happens once at startup.** `SchemaDiscoveryService` reflects over `ITypesInfo` on first access and caches the result. The system prompt and tool definitions are built from this cached metadata, so there is no per-request reflection overhead.
+- **Schema discovery happens once at startup.** `SchemaDiscoveryService` reflects over `ITypesInfo` on first access and caches the result. In WinForms, the cache is invalidated after `Application.Setup()` to ensure all XAF types are registered. The system prompt and tool definitions are built from this cached metadata, so there is no per-request reflection overhead.
