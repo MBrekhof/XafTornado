@@ -1,0 +1,172 @@
+@namespace XafTornado.Blazor.Server.Components
+
+@using DevExpress.AIIntegration.Blazor.Chat
+@using DevExpress.Blazor
+@using XafTornado.Blazor.Server.Services
+@using XafTornado.Module.Services
+@inject IJSRuntime JS
+@inject BlazorNavigationService NavService
+@implements IDisposable
+
+<button class="copilot-toggle-btn @(IsOpen ? "panel-open" : "")"
+        @onclick="TogglePanel"
+        title="@(IsOpen ? "Close AI Assistant" : "Open AI Assistant")">
+    @if (IsOpen)
+    {
+        <span>&#x2715;</span>
+    }
+    else
+    {
+        <span>&#x2728;</span>
+    }
+</button>
+
+<div class="ai-side-panel @(IsOpen ? "open" : "")">
+    <div class="copilot-panel-header">
+        <h5>AI Assistant</h5>
+        <div class="copilot-panel-header-buttons">
+            <button class="copilot-panel-log-btn @(_showLog ? "active" : "")"
+                    @onclick="ToggleLog"
+                    title="@(_showLog ? "Hide AI Log" : "Show AI Log")">
+                &#x1F4CB;
+            </button>
+            <button class="copilot-panel-close-btn" @onclick="ClosePanel" title="Close">&#x2715;</button>
+        </div>
+    </div>
+    <div class="copilot-panel-body @(_showLog ? "with-log" : "")">
+        @if (_renderChat)
+        {
+            <DxAIChat CssClass="copilot-panel-chat"
+                      UseStreaming="true"
+                      SizeMode="SizeMode.Small"
+                      ResponseContentFormat="ResponseContentFormat.Markdown">
+                <MessageContentTemplate>
+                    @ToHtml(context.Content)
+                </MessageContentTemplate>
+                <EmptyMessageAreaTemplate>
+                    <div class="copilot-panel-empty">
+                        <div class="ai-logo">&#x2728;</div>
+                        <h4>@AIChatDefaults.HeaderText</h4>
+                        <p>Ask me anything about your data.</p>
+                    </div>
+                </EmptyMessageAreaTemplate>
+            </DxAIChat>
+        }
+        @if (_showLog)
+        {
+            <AILogViewer />
+        }
+    </div>
+</div>
+
+@code {
+    private bool _isOpen;
+    private bool _renderChat;
+    private bool _showLog;
+
+    private bool IsOpen
+    {
+        get => _isOpen;
+        set
+        {
+            if (_isOpen == value) return;
+            _isOpen = value;
+            if (_isOpen && !_renderChat)
+            {
+                _renderChat = true;
+            }
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        NavService.OnSidePanelToggleRequested += HandleExternalToggle;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (firstRender)
+        {
+            try
+            {
+                var saved = await JS.InvokeAsync<string>("localStorage.getItem", "copilotSidePanelOpen");
+                if (saved == "true")
+                {
+                    IsOpen = true;
+                    await JS.InvokeVoidAsync("document.body.classList.add", "side-panel-open");
+                }
+
+                var logSaved = await JS.InvokeAsync<string>("localStorage.getItem", "copilotLogVisible");
+                if (logSaved == "true")
+                {
+                    _showLog = true;
+                }
+
+                StateHasChanged();
+            }
+            catch
+            {
+                // localStorage may not be available
+            }
+        }
+    }
+
+    private async void HandleExternalToggle()
+    {
+        await InvokeAsync(async () =>
+        {
+            IsOpen = !IsOpen;
+            await SaveState();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        NavService.OnSidePanelToggleRequested -= HandleExternalToggle;
+    }
+
+    private async Task TogglePanel()
+    {
+        IsOpen = !IsOpen;
+        await SaveState();
+    }
+
+    private async Task ClosePanel()
+    {
+        IsOpen = false;
+        await SaveState();
+    }
+
+    private async Task ToggleLog()
+    {
+        _showLog = !_showLog;
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", "copilotLogVisible", _showLog ? "true" : "false");
+        }
+        catch
+        {
+            // Ignore JS interop errors
+        }
+    }
+
+    private async Task SaveState()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", "copilotSidePanelOpen", IsOpen ? "true" : "false");
+            if (IsOpen)
+                await JS.InvokeVoidAsync("document.body.classList.add", "side-panel-open");
+            else
+                await JS.InvokeVoidAsync("document.body.classList.remove", "side-panel-open");
+        }
+        catch
+        {
+            // Ignore JS interop errors
+        }
+    }
+
+    private MarkupString ToHtml(string markdown)
+        => new(AIChatDefaults.ConvertMarkdownToHtml(markdown));
+}

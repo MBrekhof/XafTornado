@@ -1,0 +1,10 @@
+<Solution>
+  <Configurations>
+    <BuildType Name="Debug" />
+    <BuildType Name="EasyTest" />
+    <BuildType Name="Release" />
+  </Configurations>
+  <Project Path="XafTornado/XafTornado.Blazor.Server/XafTornado.Blazor.Server.csproj" />
+  <Project Path="XafTornado/XafTornado.Module/XafTornado.Module.csproj" />
+  <Project Path="XafTornado/XafTornado.Win/XafTornado.Win.csproj" />
+</Solution>
