@@ -4,7 +4,7 @@ This guide walks you through adding the LLMTornado-powered AI chat assistant to 
 
 ## Prerequisites
 
-- An existing DevExpress XAF application (EF Core, v25.2+) with Blazor Server and/or WinForms
+- An existing DevExpress XAF application (EF Core 8–10, XAF v25.2.5+ / v26.1 recommended) with Blazor Server and/or WinForms
 - An API key for at least one supported AI provider (OpenAI, Anthropic, Google, Mistral, etc.)
 - .NET 10.0 SDK
 
@@ -24,10 +24,10 @@ Add the AI chat control package to your **UI project(s)**:
 
 ```xml
 <!-- Blazor Server project -->
-<PackageReference Include="DevExpress.AIIntegration.Blazor.Chat" Version="25.2.*" />
+<PackageReference Include="DevExpress.AIIntegration.Blazor.Chat" Version="26.1.*" />
 
 <!-- WinForms project -->
-<PackageReference Include="DevExpress.AIIntegration.WinForms.Chat" Version="25.2.*" />
+<PackageReference Include="DevExpress.AIIntegration.WinForms.Chat" Version="26.1.*" />
 ```
 
 ## Step 2: Copy the Service Files
@@ -37,13 +37,13 @@ Copy the entire `Services/` folder from `XafTornado.Module` into your module pro
 | File | Purpose |
 |------|---------|
 | `SchemaDiscoveryService.cs` | Discovers all entities, properties, relationships, and enums via `ITypesInfo` at runtime. Generates the AI system prompt dynamically. Supports `[AIVisible]` and `[AIDescription]` attributes. |
-| `AIChatService.cs` | Manages the `TornadoApi` client lifecycle, conversation history (50 message pairs), native tool-calling loop with Polly retry, and multi-provider support. |
+| `AIChatService.cs` | Manages the `TornadoApi` client lifecycle, conversation history (50 message pairs), native tool-calling loop with Polly retry, multi-provider support, and the per-turn tool-call trace (`LastToolCalls`). |
 | `AIChatClient.cs` | `IChatClient` adapter that bridges DevExpress AI chat controls to `AIChatService`. |
-| `AIToolsProvider.cs` | Provides 12 AI tools: data access (`list_entities`, `describe_entity`, `query_entity`, `create_entity`, `update_entity`), navigation (`navigate_to_list`, `navigate_to_detail`), view management (`filter_active_list`, `clear_active_list_filter`, `save_active_view`, `close_active_view`), and context (`get_active_view`). |
+| `AIToolsProvider.cs` | Provides 12 AI tools: data access (`list_entities`, `describe_entity`, `query_entity`, `create_entity`, `update_entity`), navigation (`navigate_to_list`, `navigate_to_detail`), view management (`filter_active_list`, `clear_active_list_filter`, `save_active_view`, `close_active_view`), and context (`get_active_view`). Every tool returns one JSON object; records carry `id`. |
 | `ActiveViewContext.cs` | Singleton tracking what the user is currently viewing (entity, list vs. detail, current record). Updated by `ActiveViewTrackingController`. |
 | `AIChatDefaults.cs` | Shared UI defaults: header text, empty-state text, prompt suggestions, and Markdown-to-HTML rendering. |
 | `AIOptions.cs` | Configuration model bound from the `"AI"` section in `appsettings.json`. |
-| `ServiceCollectionExtensions.cs` | `AddAIServices()` extension method that registers all services with DI. |
+| `ServiceCollectionExtensions.cs` | `AddAIServices()` extension method that registers all services with DI. The `AIChatService` singleton is created with tools and system prompt already wired, so every consumer gets the same configured instance. |
 
 Also copy the platform-agnostic interface and logging:
 
@@ -146,6 +146,10 @@ builder.Services.AddDevExpressAI();
 // Register WinForms navigation service
 builder.Services.AddSingleton<WinNavigationService>();
 builder.Services.AddSingleton<INavigationService>(sp => sp.GetRequiredService<WinNavigationService>());
+
+// ... after builder.Build():
+var service = winApplication.ServiceProvider.GetRequiredService<AIChatService>();
+AIExtensionsContainerDesktop.Default.RegisterChatClient(new AIChatClient(service));
 ```
 
 **WinForms** — in your `Program.cs`, after `winApplication.Setup()`:
@@ -169,6 +173,17 @@ winApplication.Start();
 ```
 
 **Important WinForms note:** In WinForms, `INonSecuredObjectSpaceFactory` does not work from manually-created DI scopes because XAF's `SimpleValueManager` doesn't propagate application context. The `Application` and `UiContext` properties on `AIToolsProvider` enable ObjectSpace creation via `XafApplication.CreateObjectSpace()` dispatched to the UI thread.
+
+### PostgreSQL notes
+
+If your database is PostgreSQL (Npgsql), two things the XAF template does not tell you:
+
+- Add `Persist Security Info=True` to the connection string. XAF's non-MARS fallback re-creates
+  connections from an opened one, and Npgsql strips the password otherwise — the symptom is a login that
+  fails with *"No password has been provided"* while the database updater works fine.
+- Set `AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true)` somewhere every host passes
+  through (this repo does it in the module's static constructor) if your entities write `DateTime` values
+  with `Kind=Unspecified`. Putting it only in `Program.Main` misses test hosts such as `WebApplicationFactory`.
 
 ## Step 8: Configure appsettings.json
 
@@ -219,12 +234,20 @@ You only need keys for the providers you want to use. The Development file overr
 ## Step 9: Run and Verify
 
 1. Build your application
-2. Run it and log in
+2. Create/update the database (`-- --updateDatabase --forceUpdate --silent` from the command line; the template only auto-updates under a debugger), run it and log in
 3. **Blazor**: Navigate to the **AI Chat** item in the sidebar or expand the AI side panel. **WinForms**: The AI chat panel is docked on the right side of the main window.
 4. Ask: *"What entities are available in the database?"*
 5. The AI should list all your business objects with their descriptions
 6. Try: *"Open the customers list"* — the AI should navigate the app
 7. Try: *"Filter by country USA"* — the AI should apply a criteria filter
+
+## Step 10: Test It
+
+The tool layer is the part worth testing — see [DOCS/TESTING.md](DOCS/TESTING.md). `XafTornado.ToolTests/AppFixture.cs`
+is reusable as-is: it boots your Blazor host with `WebApplicationFactory`, points it at a throwaway database,
+seeds it through XAF's `IDBUpdater`, and invokes tools through `AIFunction.InvokeAsync` — the same path the
+model uses. Assert on the JSON fields, never on wording. `tests/llm-evals.yaml` shows how to assert on which
+tools the model called (`called:` / `not_called:`) instead of on its answer text.
 
 ## What Gets Discovered Automatically
 
@@ -262,6 +285,6 @@ When any entity in your model has `[AIVisible]`, the discovery switches to **opt
 ### Other Customizations
 
 - **System prompt tone**: Edit `SchemaDiscoveryService.GenerateSystemPrompt()` to change the opening line from "order management application" to whatever fits your domain.
-- **Additional tools**: Add new methods to `AIToolsProvider` with `[Description]` attributes and register them in `CreateTools()`. For example, you could add domain-specific tools like `generate_report` or `send_notification`.
+- **Additional tools**: Add new methods to `AIToolsProvider` with `[Description]` attributes and register them in `CreateTools()`. Return one JSON object via the `Json(...)` helper (errors via `Error(...)` / `{ error, ...hints }`) so tests and follow-up tool calls can rely on the shape. For example, you could add domain-specific tools like `generate_report` or `send_notification`.
 - **Prompt suggestions**: Edit `AIChatDefaults.PromptSuggestions` to provide domain-specific example prompts for your users.
 - **Model list**: Edit the `AvailableModels` array in `SelectAIModelController` to include only the models relevant to your subscription.
