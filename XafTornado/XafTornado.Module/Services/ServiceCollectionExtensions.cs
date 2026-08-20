@@ -3,6 +3,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace XafTornado.Module.Services
 {
@@ -14,8 +15,20 @@ namespace XafTornado.Module.Services
             ArgumentNullException.ThrowIfNull(configuration);
 
             services.Configure<AIOptions>(configuration.GetSection(AIOptions.SectionName));
-            services.AddSingleton<AIChatService>();
             services.AddSingleton<SchemaDiscoveryService>();
+            // Tools + system prompt are wired here so every consumer (DxAIChat via IChatClient,
+            // TestApiController, WinForms) gets the same configured singleton.
+            services.AddSingleton<AIChatService>(sp =>
+            {
+                var service = new AIChatService(
+                    sp.GetRequiredService<IOptions<AIOptions>>(),
+                    sp.GetRequiredService<ILogger<AIChatService>>());
+                var toolsProvider = sp.GetRequiredService<AIToolsProvider>();
+                service.ToolFunctions = toolsProvider.Tools;
+                service.TornadoTools = toolsProvider.GetTornadoTools();
+                service.SystemMessage = sp.GetRequiredService<SchemaDiscoveryService>().GenerateSystemPrompt();
+                return service;
+            });
             services.AddSingleton<ActiveViewContext>();
 
             // Log store + logger provider for the AI log viewer panel.
@@ -32,19 +45,7 @@ namespace XafTornado.Module.Services
 
             // Register the IChatClient adapter so DevExpress DxAIChat / AIChatControl
             // can route messages through LLMTornado automatically.
-            services.AddChatClient(sp =>
-            {
-                var service = sp.GetRequiredService<AIChatService>();
-                var toolsProvider = sp.GetRequiredService<AIToolsProvider>();
-                var schemaService = sp.GetRequiredService<SchemaDiscoveryService>();
-
-                // Wire tools — both AIFunction (for execution) and LLMTornado Tool (for schema)
-                service.ToolFunctions = toolsProvider.Tools;
-                service.TornadoTools = toolsProvider.GetTornadoTools();
-                service.SystemMessage = schemaService.GenerateSystemPrompt();
-
-                return new AIChatClient(service);
-            });
+            services.AddChatClient(sp => new AIChatClient(sp.GetRequiredService<AIChatService>()));
 
             return services;
         }
