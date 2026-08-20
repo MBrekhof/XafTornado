@@ -37,6 +37,7 @@ dotnet build XafTornado/XafTornado.Module/XafTornado.Module.csproj
 Strategy and layers: `DOCS/TESTING.md`. AI tools return JSON — tests assert on fields, never on wording.
 
 - Tool-level tests (no LLM, real Postgres, ~10 s): `docker start xaf-postgres && dotnet test XafTornado/XafTornado.ToolTests`
+- Smoke test (Playwright, ~30 s, hosts the app itself): `powershell -File scripts/smoke.ps1`
 - LLM evals (opt-in, needs API key) — YAML runner via REST bridge: `dotnet run --project XafTornado/XafTornado.Tests -- tests/sample-orders.yaml`
 - Requires the Blazor Server app running at `http://localhost:5000` (Debug build — `TestApiController` is compiled out of Release)
 - `ConsoleTest` project is a minimal console app for ad-hoc testing (not in solution).
