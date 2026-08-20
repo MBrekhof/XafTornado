@@ -6,6 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - Push to `origin` (MBrekhof/XafTornado).
 - Always create feature branches off `master` — do not commit directly to `master`.
+- Use conventional commits: `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`.
+
+## Code Style
+
+- Format with `dotnet format` (targets the solution). No `.editorconfig` yet — uses SDK defaults.
 
 ## Project Overview
 
@@ -27,7 +32,13 @@ dotnet run --project XafTornado/XafTornado.Win
 dotnet build XafTornado/XafTornado.Module/XafTornado.Module.csproj
 ```
 
-There is no formal test suite configured. The `ConsoleTest` project is a minimal console app for ad-hoc testing.
+### Testing
+
+Strategy and layers: `DOCS/TESTING.md`. AI tools return JSON — tests assert on fields, never on wording.
+
+- LLM evals (opt-in, needs API key) — YAML runner via REST bridge: `dotnet run --project XafTornado/XafTornado.Tests -- tests/sample-orders.yaml`
+- Requires the Blazor Server app running at `http://localhost:5000` (Debug build — `TestApiController` is compiled out of Release)
+- `ConsoleTest` project is a minimal console app for ad-hoc testing (not in solution).
 
 ## Architecture
 
@@ -61,7 +72,7 @@ The integration chain flows:
 
 ### Database
 
-- EF Core 8.0.18 with PostgreSQL (`xaftornado`) for development
+- EF Core 10.0.11 with PostgreSQL (`xaftornado`) for development
 - DbContext: `XafTornadoEFCoreDbContext`
 - Auto-migration via XAF's `ModuleUpdater` pattern (`DatabaseUpdate/Updater.cs`)
 - 14 entities: Order, OrderItem, Customer, Product, Category, Supplier, Employee, Department, EmployeeTerritory, Territory, Region, Shipper, Invoice, ApplicationUser, ApplicationUserLoginInfo
@@ -70,9 +81,9 @@ The integration chain flows:
 ## Tech Stack
 
 - .NET 10.0 (net10.0 / net10.0-windows)
-- DevExpress XAF 25.2.*, DevExpress AI Integration 25.2.*
+- DevExpress XAF 26.1.*, DevExpress AI Integration 26.1.*
 - LLMTornado, Microsoft.Extensions.AI, Polly
-- EF Core 8.0.18 + PostgreSQL
+- EF Core 10.0.11 + PostgreSQL
 - Markdig + HtmlSanitizer for Markdown rendering
 
 ## Configuration
