@@ -16,6 +16,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Same shared framework as the app: WebApplicationFactory needs it, and it prunes the
+         vulnerable System.Security.Cryptography.Xml 9.0.0 that DevExpress.Printing.Core drags in. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
     <ProjectReference Include="..\XafTornado.Blazor.Server\XafTornado.Blazor.Server.csproj" />
   </ItemGroup>
 
