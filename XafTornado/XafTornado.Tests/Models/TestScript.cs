@@ -76,4 +76,24 @@ public class StepAssertions
 
     /// <summary>Result text must match this regex pattern.</summary>
     public string? Matches { get; set; }
+
+    /// <summary>
+    /// For <c>say</c> steps: tools the model must have called this turn (any order).
+    /// Each entry: <c>- tool: query_entity</c>, optionally <c>with: { entityName: Order }</c> —
+    /// every listed argument must appear in the call (strings: case-insensitive contains, <c>/regex/</c> supported).
+    /// Prefer this over text assertions — wording drifts, behaviour is the contract.
+    /// </summary>
+    public List<ToolCallAssertion>? Called { get; set; }
+
+    /// <summary>For <c>say</c> steps: tool names that must NOT have been called this turn.</summary>
+    public List<string>? NotCalled { get; set; }
 }
+
+public class ToolCallAssertion
+{
+    public string Tool { get; set; } = "";
+    public Dictionary<string, object>? With { get; set; }
+}
+
+/// <summary>A tool call reported by <c>/api/test/ask</c>.</summary>
+public sealed record ToolCallInfo(string Name, System.Text.Json.JsonElement Arguments);

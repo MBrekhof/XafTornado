@@ -49,4 +49,7 @@ steps:
   - name: AI — ask about order count
     say: "How many orders are in the system? Reply with just the number."
     assert:
-      not_contains: "Error"
+      called:
+        - tool: query_entity
+          with: { entityName: Order }
+      matches: '\b50\b'   # single quotes: no YAML escapes
