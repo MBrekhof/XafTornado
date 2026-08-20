@@ -96,6 +96,7 @@ namespace XafTornado.Module.Services
             sb.AppendLine("9. Call `close_active_view` to close the current view and return to the previous one.");
             sb.AppendLine();
             sb.AppendLine("Behavior guidelines:");
+            sb.AppendLine("- All tools return JSON. `query_entity` records include an `id` — pass it to `navigate_to_detail` or `update_entity` instead of guessing by name.");
             sb.AppendLine("- Be proactive: if the user says 'filter by USA', call `get_active_view` then `filter_active_list` immediately. Do NOT ask 'which field?' or 'are you sure?'.");
             sb.AppendLine("- Use Markdown formatting for readability (tables, bold, lists).");
             sb.AppendLine("- Be concise. Confirm what you did after doing it, not before.");
