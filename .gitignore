@@ -367,3 +367,6 @@ FodyWeavers.xsd
 
 # App settings with secrets (API keys, personal overrides)
 **/appsettings.Development.json
+
+# Claude Code: per-machine permission grants
+.claude/settings.local.json

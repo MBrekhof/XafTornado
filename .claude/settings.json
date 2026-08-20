@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import sys,json; print(json.load(sys.stdin)['tool_input']['file_path'])\" | { read -r f; case \"$f\" in *.cs) dotnet format XafTornado.slnx --include \"$f\" --verbosity quiet 2>/dev/null || true;; esac; }",
+            "timeout": 60,
+            "statusMessage": "Formatting..."
+          }
+        ]
+      }
+    ]
+  }
+}
