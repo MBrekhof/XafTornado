@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using DevExpress.ExpressApp;
 using DevExpress.ExpressApp.Actions;
 using DevExpress.ExpressApp.DC;
@@ -16,6 +16,14 @@ namespace XafTornado.Module
     // For more typical usage scenarios, be sure to check out https://docs.devexpress.com/eXpressAppFramework/DevExpress.ExpressApp.ModuleBase.
     public sealed class XafTornadoModule : ModuleBase
     {
+        static XafTornadoModule()
+        {
+            // The data model writes DateTime values with Kind=Unspecified; Npgsql 6+ refuses those for
+            // 'timestamp with time zone' unless this switch is on. It lives here, not in each host's Main,
+            // so every host (Blazor, WinForms, test hosts) that loads the module gets it.
+            AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
+        }
+
         public XafTornadoModule()
         {
             //
