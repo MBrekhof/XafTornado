@@ -5,7 +5,7 @@ Integrating [LLMTornado](https://github.com/lofcz/LlmTornado) into a DevExpress 
 ## Features
 
 - **Dynamic Schema Discovery** — The AI assistant automatically discovers all entities, properties, relationships, and enum values at runtime via XAF `ITypesInfo` reflection. Add or modify business objects and the AI immediately knows about them.
-- **12 AI Tools** — Generic data tools (`list_entities`, `describe_entity`, `query_entity`, `create_entity`, `update_entity`), navigation tools (`navigate_to_list`, `navigate_to_detail`), view management (`filter_active_list`, `clear_active_list_filter`, `save_active_view`, `close_active_view`), and context awareness (`get_active_view`).
+- **12 AI Tools** — Generic data tools (`list_entities`, `describe_entity`, `query_entity`, `create_entity`, `update_entity`), navigation tools (`navigate_to_list`, `navigate_to_detail`), view management (`filter_active_list`, `clear_active_list_filter`, `save_active_view`, `close_active_view`), and context awareness (`get_active_view`). Every tool returns JSON; records carry their `id`, so follow-up calls address real keys instead of guessing by name.
 - **Active View Awareness** — The AI knows what the user is currently viewing (entity, list vs. detail, current record) and can act on it contextually ("filter this list", "save this record", "close this view").
 - **Navigation & Filtering** — The AI can navigate the application to any list or detail view and apply DevExpress criteria filters on the active list — all from natural language.
 - **Conversation History** — Full conversation continuity across messages (up to 50 message pairs), so the AI remembers previous questions and answers within a session.
@@ -15,7 +15,8 @@ Integrating [LLMTornado](https://github.com/lofcz/LlmTornado) into a DevExpress 
 - **Two-Tier Discovery** — Lightweight system prompt (entity names only) with on-demand `describe_entity` tool for detail loading, minimizing per-message token cost.
 - **Dual Platform** — Full support for both Blazor Server and WinForms using DevExpress AI chat controls (`DxAIChat` and `AIChatControl`), backed by the same shared module.
 - **Markdown Rendering** — AI responses rendered as formatted HTML with table, code block, and list support via Markdig + HtmlSanitizer.
-- **Runtime Model Switching** — Switch between AI models (Claude Sonnet 4, GPT-4o, Gemini 2.5 Pro, etc.) at runtime via a toolbar action.
+- **Runtime Model Switching** — Switch between AI models (Claude Sonnet 4.6, GPT-4o, Gemini 2.5 Pro, etc.) at runtime via a toolbar action.
+- **Tested at three levels** — 24 tool-level xUnit tests on real PostgreSQL, a Playwright smoke test, and trace-based LLM evals that assert on which tools the model called. See [Testing](#testing).
 
 ## Architecture
 
@@ -42,6 +43,7 @@ XafTornado.Blazor.Server/   Blazor Server UI
     BlazorNavigationService       INavigationService impl (queue-based for UI thread safety)
   Controllers/
     NavigationExecutorController  Dequeues nav/filter/save/close on Blazor UI thread
+    TestApiController             Debug-only REST bridge for tests (/api/test/tool, /ask, /clear)
   Editors/AIChatViewItem/         AIChat.razor (DxAIChat component)
   Components/
     AISidePanel.razor             Collapsible AI chat side panel
@@ -53,26 +55,32 @@ XafTornado.Win/             WinForms UI
     AISidePanelController         Docked AIChatControl panel (right side, resizable)
     WinNavigationExecutorController  Dequeues nav/filter/save/close on WinForms UI thread
   Editors/                        AIChatControl integration (ViewItem wrapper)
+
+XafTornado.ToolTests/       24 xUnit tests — tools invoked as the model invokes them, real PostgreSQL
+XafTornado.Smoke/           Playwright smoke test (login → list → AI panel → tool call)
+XafTornado.Tests/           YAML runner for LLM evals (tests/llm-evals.yaml)
+scripts/smoke.ps1           Update DB → start app → smoke test → stop app
+DOCS/                       TESTING.md (strategy), PHASE3.md (next work), REVIEW-2026-03-04.md
 ```
 
 ### How It Works
 
-1. **Startup** — `ServiceCollectionExtensions.AddAIServices()` registers all services. `SchemaDiscoveryService` reflects over `ITypesInfo` to discover the data model. The system prompt and AI tools are generated dynamically from this metadata. In WinForms, schema discovery is re-run after `Application.Setup()` to ensure all XAF types are registered.
+1. **Startup** — `ServiceCollectionExtensions.AddAIServices()` registers all services; the `AIChatService` singleton is built with its tools and system prompt already attached, so every consumer (Blazor chat, WinForms, the test bridge) gets the same configured instance. `SchemaDiscoveryService` reflects over `ITypesInfo` to discover the data model. The system prompt and AI tools are generated dynamically from this metadata. In WinForms, schema discovery is re-run after `Application.Setup()` to ensure all XAF types are registered.
 
 2. **Multi-Provider Init** — `AIChatService` lazy-initializes a `TornadoApi` client from API keys configured in `appsettings.json` (or `appsettings.Development.json` for local keys). Multiple providers can be configured simultaneously; the correct one is auto-selected based on the model name prefix.
 
-3. **AI Tools** — `AIToolsProvider` exposes 12 tools to the LLM:
-   - `list_entities` — Returns all entity names with descriptions
-   - `describe_entity` — Returns full schema details for a single entity (properties, types, relationships, enums)
-   - `query_entity` — Queries any entity with optional `PropertyName=value` filters
-   - `create_entity` — Creates a record for any entity
-   - `update_entity` — Updates an existing record
+3. **AI Tools** — `AIToolsProvider` exposes 12 tools to the LLM. Each returns one JSON object; errors are `{ "error": "...", ...hints }` (e.g. `availableEntities`, `availableProperties`):
+   - `list_entities` — All entity names with descriptions, property names and relationships
+   - `describe_entity` — Full schema for one entity (typed properties, required flags, relationships, enum values)
+   - `query_entity` — `{ entity, count, truncated?, records: [{ id, ...properties, ...references }] }` with optional `PropertyName=value` filters
+   - `create_entity` — `{ entity, id, created, values }`
+   - `update_entity` — `{ entity, id, display, updated, changes: { Property: { from, to } } }`; accepts an `id` or a name search
    - `navigate_to_list` / `navigate_to_detail` — Navigate the app to list or detail views
    - `filter_active_list` / `clear_active_list_filter` — Apply or clear DevExpress criteria filters
    - `save_active_view` / `close_active_view` — Save or close the current view
    - `get_active_view` — Returns what the user is currently viewing
 
-4. **Native Tool Loop** — `AIChatService.AskAsync()` sends the user's message with full conversation history, receives the response via `GetResponseRich()`, and executes any tool calls in a loop (up to `MaxToolIterations`). Tool results are fed back to the LLM until it produces a final text response.
+4. **Native Tool Loop** — `AIChatService.AskAsync()` sends the user's message with full conversation history, receives the response via `GetResponseRich()`, and executes any tool calls in a loop (up to `MaxToolIterations`). Tool results are fed back to the LLM until it produces a final text response. The turn's tool calls are kept in `AIChatService.LastToolCalls` — that is what the LLM evals assert on.
 
 5. **Chat Flow** — User messages flow through `DxAIChat` (Blazor) or `AIChatControl` (WinForms) → `AIChatClient` (IChatClient adapter) → `AIChatService` → LLMTornado → AI model. The response streams back through the same chain and is rendered as formatted HTML.
 
@@ -102,12 +110,13 @@ A Northwind-style order management domain with 13 business entities:
 | **Shipper** | CompanyName, Phone | has many Orders |
 | **Invoice** | InvoiceNumber, InvoiceDate, DueDate, Status (Draft/Sent/Paid/Overdue/Cancelled) | has many Orders |
 
-Seed data is generated automatically on first run: 20 customers, 5 employees across 5 departments, 3 shippers, 30 products across 8 categories, 50 orders, and 20 invoices.
+Seed data (`Random(12345)`, fully deterministic) is created by the database updater: 20 customers, 5 employees across 5 departments, 3 shippers, 30 products across 8 categories, 50 orders, and 20 invoices.
 
 ## Prerequisites
 
 - [.NET 10.0 SDK](https://dotnet.microsoft.com/download)
-- [DevExpress Universal Subscription](https://www.devexpress.com/) (v25.2+) with a valid NuGet feed configured
+- [DevExpress Universal Subscription](https://www.devexpress.com/) v26.1+ with a valid NuGet feed configured (26.1 adds official EF Core 10 support)
+- PostgreSQL — the repo assumes a local server on port 5432 with user `xaf` / `xaf123` (connection strings in `appsettings.json` / `App.config`); e.g. `docker run -d --name xaf-postgres -p 5432:5432 -e POSTGRES_USER=xaf -e POSTGRES_PASSWORD=xaf123 postgres:17`
 - An API key for at least one supported AI provider (OpenAI, Anthropic, Google, Mistral, etc.)
 
 ## Getting Started
@@ -137,7 +146,15 @@ Create `appsettings.Development.json` (gitignored) alongside `appsettings.json` 
 
 You only need a key for the provider(s) you want to use. The Development file overrides the base `appsettings.json` and is excluded from source control. See the [Configuration](#configuration) section for all available settings.
 
-### 3. Run
+### 3. Create the database
+
+The XAF template only auto-creates/updates the database when a debugger is attached. From the command line, run the updater once (and again after any data-model change):
+
+```bash
+dotnet run --project XafTornado/XafTornado.Blazor.Server -- --updateDatabase --forceUpdate --silent
+```
+
+### 4. Run
 
 ```bash
 # Blazor Server (web)
@@ -170,7 +187,7 @@ Selectable at runtime via the model switcher toolbar action:
 
 | Provider | Models |
 |----------|--------|
-| Anthropic | Claude Sonnet 4, Claude Sonnet 4.5, Claude Opus 4 |
+| Anthropic | Claude Sonnet 4.6, Claude Sonnet 4.5, Claude Opus 4.6 |
 | OpenAI | GPT-4o, GPT-4o Mini, GPT-4.1, GPT-4.1 Mini, o3-mini, o4-mini |
 | Google | Gemini 2.5 Pro, Gemini 2.5 Flash |
 | Mistral | Mistral Large |
@@ -254,21 +271,32 @@ modelBuilder.Entity<Department>()
 
 No changes were made to `SchemaDiscoveryService`, `AIToolsProvider`, `AIChatService`, or any other service file. The AI discovered Department entirely through runtime reflection.
 
+## Testing
+
+Three layers, described in [DOCS/TESTING.md](DOCS/TESTING.md). What gets tested is the AI tool layer — schema discovery, filter parsing, create/update mapping, navigation — not XAF CRUD.
+
+| Layer | Command | Time | Needs |
+|-------|---------|------|-------|
+| Tool-level (24 xUnit tests, tools invoked exactly as the model invokes them, assertions on JSON fields) | `dotnet test XafTornado/XafTornado.ToolTests` | ~10 s | PostgreSQL |
+| Smoke (Playwright: login → list view → AI panel → tool call) | `powershell -File scripts/smoke.ps1` | ~30 s | PostgreSQL |
+| LLM evals (prompt → assert on the **tool-call trace**, not the wording) | `dotnet run --project XafTornado/XafTornado.Tests -- tests/llm-evals.yaml` | ~1 min | running app + API key |
+
 ## Roadmap
 
-Phase 1 (attribute-based schema filtering) and Phase 2 (two-tier discovery with `describe_entity`) are complete. Phase 3 (validation testing with large data models, token reduction measurement) is next.
+Phase 1 (attribute-based schema filtering) and Phase 2 (two-tier discovery with `describe_entity`) are complete. Phase 3 — mutation confirmation, security boundary (tools respecting XAF permissions), conversation persistence, richer queries — is specified in [DOCS/PHASE3.md](DOCS/PHASE3.md).
 
 ## Tech Stack
 
 | Layer | Technology |
 |-------|-----------|
-| Framework | DevExpress XAF 25.2.* |
+| Framework | DevExpress XAF 26.1.* |
 | UI (Web) | Blazor Server, DevExpress `DxAIChat` |
 | UI (Desktop) | WinForms, DevExpress `AIChatControl` |
 | AI | LLMTornado, Microsoft.Extensions.AI |
-| Database | EF Core 8.0.18 + PostgreSQL |
+| Database | EF Core 10 + PostgreSQL (Npgsql) |
 | Resilience | Polly (retry with exponential backoff) |
 | Rendering | Markdig (Markdown), HtmlSanitizer (XSS protection) |
+| Testing | xUnit + WebApplicationFactory, Microsoft.Playwright.NUnit, YAML eval runner |
 | Runtime | .NET 10.0 |
 
 ## Articles
