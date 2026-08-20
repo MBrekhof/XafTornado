@@ -23,7 +23,6 @@ namespace XafTornado.Win
             SplashScreen = new DXSplashScreen(typeof(XafSplashScreen), new DefaultOverlayFormOptions());
             ApplicationName = "XafTornado";
             CheckCompatibilityType = DevExpress.ExpressApp.CheckCompatibilityType.DatabaseSchema;
-            UseOldTemplates = false;
             DatabaseVersionMismatch += XafTornadoWindowsFormsApplication_DatabaseVersionMismatch;
             CustomizeLanguagesList += XafTornadoWindowsFormsApplication_CustomizeLanguagesList;
         }

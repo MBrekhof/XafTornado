@@ -1,4 +1,4 @@
-﻿using System.Configuration;
+using System.Configuration;
 using DevExpress.EntityFrameworkCore.Security;
 using DevExpress.ExpressApp;
 using DevExpress.ExpressApp.ApplicationBuilder;
@@ -112,13 +112,6 @@ namespace XafTornado.Win
             try
             {
                 var service = winApplication.ServiceProvider.GetRequiredService<AIChatService>();
-                var toolsProvider = winApplication.ServiceProvider.GetRequiredService<AIToolsProvider>();
-                var schemaService = winApplication.ServiceProvider.GetRequiredService<SchemaDiscoveryService>();
-
-                service.ToolFunctions = toolsProvider.Tools;
-                service.TornadoTools = toolsProvider.GetTornadoTools();
-                service.SystemMessage = schemaService.GenerateSystemPrompt();
-
                 var chatClient = new AIChatClient(service);
                 AIExtensionsContainerDesktop.Default.RegisterChatClient(chatClient);
             }
