@@ -1,0 +1,52 @@
+name: Orders & Customers Data Validation
+base_url: http://localhost:5000
+clear_history: true
+
+steps:
+  - name: Seed data — customers exist
+    tool: query_entity
+    params:
+      entityName: Customer
+      top: 5
+    assert:
+      count: ">= 1"
+      not_contains: "Error"
+
+  - name: Seed data — orders exist
+    tool: query_entity
+    params:
+      entityName: Order
+      top: 10
+    assert:
+      count: ">= 1"
+
+  - name: Seed data — products exist
+    tool: query_entity
+    params:
+      entityName: Product
+      top: 5
+    assert:
+      count: ">= 1"
+      not_contains: "Error"
+
+  - name: Filter — German customers
+    tool: query_entity
+    params:
+      entityName: Customer
+      filter: "Country=Germany"
+    assert:
+      count: ">= 1"
+      contains: "Germany"
+
+  - name: Filter — employees in Sales department
+    tool: query_entity
+    params:
+      entityName: Employee
+      top: 20
+    assert:
+      count: ">= 1"
+
+  - name: AI — ask about order count
+    say: "How many orders are in the system? Reply with just the number."
+    assert:
+      not_contains: "Error"

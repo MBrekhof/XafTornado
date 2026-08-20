@@ -4,8 +4,9 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
-using System.Text;
+using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using DevExpress.ExpressApp;
 using DevExpress.ExpressApp.DC;
 using LlmTornado.Common;
@@ -160,36 +161,59 @@ namespace XafTornado.Module.Services
             }
         }
 
-        /// <summary>
-        /// Returns a comma-separated list of all known entity names.
-        /// </summary>
-        private string GetEntityNameList() =>
-            string.Join(", ", _schemaService.Schema.Entities.Select(e => e.Name));
+        // -- JSON result helpers ---------------------------------------------------
+        // Every tool returns one JSON object. Errors are { "error": "...", ...hints }.
+        // Records carry "id" (the XAF key) so follow-up tools can address them directly.
+
+        private static readonly JsonSerializerOptions JsonOpts = new()
+        {
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+            Converters = { new JsonStringEnumConverter() },
+        };
+
+        private static string Json(object payload) => JsonSerializer.Serialize(payload, JsonOpts);
+
+        private static string Error(string message) => Json(new { error = message });
+
+        private List<string> EntityNames() => _schemaService.Schema.Entities.Select(e => e.Name).ToList();
+
+        private string UnknownEntity(string entityName) =>
+            Json(new
+            {
+                error = string.IsNullOrWhiteSpace(entityName)
+                    ? "Entity name is required."
+                    : $"Entity '{entityName}' not found.",
+                availableEntities = EntityNames(),
+            });
+
+        private static List<string> SettableNames(EntityInfo entityInfo) =>
+            entityInfo.Properties.Select(p => p.Name)
+                .Concat(entityInfo.Relationships.Where(r => !r.IsCollection).Select(r => r.PropertyName))
+                .ToList();
+
+        private static object KeyOf(object obj, ITypeInfo typeInfo) => typeInfo.KeyMember?.GetValue(obj);
 
         /// <summary>
-        /// Formats a single entity object as a line of "Property: Value" pairs
-        /// using XAF <see cref="ITypeInfo"/> metadata.
+        /// Projects an entity object to an ordered dictionary: id, scalar properties (raw CLR values),
+        /// then to-one references as display text.
         /// </summary>
-        private string FormatObject(object obj, EntityInfo entityInfo, ITypeInfo typeInfo)
+        private static Dictionary<string, object> ToRecord(object obj, EntityInfo entityInfo, ITypeInfo typeInfo)
         {
-            var parts = new List<string>();
+            var record = new Dictionary<string, object> { ["id"] = KeyOf(obj, typeInfo) };
             foreach (var prop in entityInfo.Properties)
             {
                 var member = typeInfo.FindMember(prop.Name);
-                if (member == null) continue;
-                var val = member.GetValue(obj);
-                parts.Add($"{prop.Name}: {FormatValue(val)}");
+                if (member != null) record[prop.Name] = member.GetValue(obj);
             }
-            // Include to-one relationship references (show a summary, not the whole object)
             foreach (var rel in entityInfo.Relationships.Where(r => !r.IsCollection))
             {
                 var member = typeInfo.FindMember(rel.PropertyName);
                 if (member == null) continue;
                 var refObj = member.GetValue(obj);
-                if (refObj != null)
-                    parts.Add($"{rel.PropertyName}: {GetObjectDisplayText(refObj)}");
+                record[rel.PropertyName] = refObj == null ? null : GetObjectDisplayText(refObj);
             }
-            return string.Join(" | ", parts);
+            return record;
         }
 
         /// <summary>
@@ -198,10 +222,9 @@ namespace XafTornado.Module.Services
         /// </summary>
         private static string GetObjectDisplayText(object obj)
         {
-            if (obj == null) return "null";
+            if (obj == null) return null;
             var type = obj.GetType();
-            // Try common name properties
-            foreach (var propName in new[] { "Name", "CompanyName", "Title", "FullName", "FirstName", "Description", "InvoiceNumber" })
+            foreach (var propName in new[] { "Name", "CompanyName", "FullName", "FirstName", "Title", "InvoiceNumber", "Description" })
             {
                 var prop = type.GetProperty(propName);
                 if (prop != null)
@@ -211,16 +234,6 @@ namespace XafTornado.Module.Services
                 }
             }
             return obj.ToString();
-        }
-
-        private static string FormatValue(object val)
-        {
-            if (val == null) return "N/A";
-            if (val is DateTime dt) return dt.ToString("yyyy-MM-dd");
-            if (val is decimal d) return d.ToString("F2");
-            if (val is double dbl) return dbl.ToString("F2");
-            if (val is float f) return f.ToString("F2");
-            return val.ToString();
         }
 
         /// <summary>
@@ -271,104 +284,97 @@ namespace XafTornado.Module.Services
             return Convert.ChangeType(value, targetType, CultureInfo.InvariantCulture);
         }
 
+        /// <summary>
+        /// Finds a to-one reference target by matching the search term against its display text.
+        /// Returns the match, or a JSON error listing available records.
+        /// </summary>
+        private (object Match, string Error) FindReference(IObjectSpace os, RelationshipInfo relInfo, string value)
+        {
+            var refObjects = os.GetObjects(relInfo.TargetClrType).Cast<object>().ToList();
+            var matched = refObjects.FirstOrDefault(r =>
+                GetObjectDisplayText(r)?.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0);
+            if (matched != null) return (matched, null);
+            return (null, Json(new
+            {
+                error = $"{relInfo.PropertyName} '{value}' not found.",
+                available = refObjects.Take(10).Select(GetObjectDisplayText).ToList(),
+            }));
+        }
+
         // -- Tool implementations --------------------------------------------------
 
-        [Description("List all available entities (tables) in the database with their properties and relationships.")]
+        [Description("List all available entities (tables) in the database with their properties and relationships. Returns JSON.")]
         private string ListEntities()
         {
             _logger.LogInformation("[Tool:list_entities] Called");
             try
             {
-                var schema = _schemaService.Schema;
-                var sb = new StringBuilder();
-                sb.AppendLine("Available entities:");
-
-                foreach (var entity in schema.Entities)
+                var entities = _schemaService.Schema.Entities.Select(e => new
                 {
-                    var props = string.Join(", ", entity.Properties.Select(p => p.Name));
-                    sb.Append($"- {entity.Name} ({props})");
-
-                    var rels = entity.Relationships;
-                    if (rels.Count > 0)
+                    name = e.Name,
+                    description = string.IsNullOrEmpty(e.Description) ? null : e.Description,
+                    properties = e.Properties.Select(p => p.Name).ToList(),
+                    relationships = e.Relationships.Select(r => new
                     {
-                        var relDescriptions = rels.Select(r =>
-                            r.IsCollection ? $"has many {r.TargetEntity}" : $"belongs to {r.TargetEntity}");
-                        sb.Append($" -> {string.Join(", ", relDescriptions)}");
-                    }
-                    sb.AppendLine();
+                        property = r.PropertyName,
+                        kind = r.IsCollection ? "hasMany" : "belongsTo",
+                        target = r.TargetEntity,
+                    }).ToList(),
+                    enums = e.Properties.Where(p => p.EnumValues.Count > 0)
+                        .ToDictionary(p => p.Name, p => p.EnumValues) is { Count: > 0 } d ? d : null,
+                }).ToList();
 
-                    // Enum values for properties
-                    foreach (var p in entity.Properties.Where(p => p.EnumValues.Count > 0))
-                        sb.AppendLine($"  - {p.Name} values: {string.Join(", ", p.EnumValues)}");
-                }
-
-                var result = sb.ToString();
-                _logger.LogInformation("[Tool:list_entities] Returning {Len} chars", result.Length);
+                var result = Json(new { entities });
+                _logger.LogInformation("[Tool:list_entities] Returning {Count} entities", entities.Count);
                 return result;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:list_entities] Error");
-                return $"Error listing entities: {ex.Message}";
+                return Error($"Error listing entities: {ex.Message}");
             }
         }
 
-        [Description("Get full schema details for a single entity — properties, types, relationships, and enum values. Call this before querying or creating records of an unfamiliar entity.")]
+        [Description("Get full schema details for a single entity — properties, types, relationships, and enum values. Call this before querying or creating records of an unfamiliar entity. Returns JSON.")]
         private string DescribeEntity(
             [Description("Entity name to describe (e.g. 'Customer', 'Order'). Use list_entities to see available names.")] string entityName)
         {
             _logger.LogInformation("[Tool:describe_entity] Called with entity={Entity}", entityName);
             try
             {
-                if (string.IsNullOrWhiteSpace(entityName))
-                    return $"Entity name is required. Available entities: {GetEntityNameList()}";
+                var entityInfo = _schemaService.Schema.FindEntity(entityName ?? "");
+                if (entityInfo == null) return UnknownEntity(entityName);
 
-                var entityInfo = _schemaService.Schema.FindEntity(entityName);
-                if (entityInfo == null)
-                    return $"Entity '{entityName}' not found. Available entities: {GetEntityNameList()}";
-
-                var sb = new StringBuilder();
-                sb.AppendLine($"**{entityInfo.Name}**");
-                if (!string.IsNullOrEmpty(entityInfo.Description))
-                    sb.AppendLine(entityInfo.Description);
-                sb.AppendLine();
-
-                // Properties
-                sb.AppendLine("Properties:");
-                foreach (var prop in entityInfo.Properties)
+                var result = Json(new
                 {
-                    var required = prop.IsRequired ? " (required)" : "";
-                    var desc = !string.IsNullOrEmpty(prop.Description) ? $" — {prop.Description}" : "";
-                    sb.AppendLine($"  - {prop.Name}: {prop.TypeName}{required}{desc}");
-
-                    if (prop.EnumValues.Count > 0)
-                        sb.AppendLine($"    Values: {string.Join(", ", prop.EnumValues)}");
-                }
-
-                // Relationships
-                if (entityInfo.Relationships.Count > 0)
-                {
-                    sb.AppendLine();
-                    sb.AppendLine("Relationships:");
-                    foreach (var rel in entityInfo.Relationships)
+                    name = entityInfo.Name,
+                    description = string.IsNullOrEmpty(entityInfo.Description) ? null : entityInfo.Description,
+                    properties = entityInfo.Properties.Select(p => new
                     {
-                        var kind = rel.IsCollection ? "has many" : "belongs to";
-                        sb.AppendLine($"  - {rel.PropertyName}: {kind} {rel.TargetEntity}");
-                    }
-                }
-
-                var result = sb.ToString();
+                        name = p.Name,
+                        type = p.TypeName,
+                        required = p.IsRequired,
+                        description = string.IsNullOrEmpty(p.Description) ? null : p.Description,
+                        values = p.EnumValues.Count > 0 ? p.EnumValues : null,
+                    }).ToList(),
+                    relationships = entityInfo.Relationships.Select(r => new
+                    {
+                        property = r.PropertyName,
+                        kind = r.IsCollection ? "hasMany" : "belongsTo",
+                        target = r.TargetEntity,
+                    }).ToList(),
+                });
                 _logger.LogInformation("[Tool:describe_entity] Returning {Len} chars for {Entity}", result.Length, entityName);
                 return result;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:describe_entity] Error");
-                return $"Error describing {entityName}: {ex.Message}";
+                return Error($"Error describing {entityName}: {ex.Message}");
             }
         }
 
-        [Description("Query records of any entity (table) in the database. Call describe_entity first if you are unsure about property names or types.")]
+        [Description("Query records of any entity (table) in the database. Call describe_entity first if you are unsure about property names or types. Returns JSON: { entity, count, truncated?, records: [{ id, ...properties, ...references }] }.")]
         private string QueryEntity(
             [Description("Entity name to query (e.g. 'Customer', 'Order', 'Product'). Use list_entities to see available names.")] string entityName,
             [Description("Optional filter as semicolon-separated 'PropertyName=value' pairs. Example: 'Status=New;Country=USA'. Omit for no filter.")] string filter = "",
@@ -377,12 +383,8 @@ namespace XafTornado.Module.Services
             _logger.LogInformation("[Tool:query_entity] Called with entity={Entity}, filter={Filter}, top={Top}", entityName, filter, top);
             try
             {
-                if (string.IsNullOrWhiteSpace(entityName))
-                    return $"Entity name is required. Available entities: {GetEntityNameList()}";
-
-                var entityInfo = _schemaService.Schema.FindEntity(entityName);
-                if (entityInfo == null)
-                    return $"Entity '{entityName}' not found. Available entities: {GetEntityNameList()}";
+                var entityInfo = _schemaService.Schema.FindEntity(entityName ?? "");
+                if (entityInfo == null) return UnknownEntity(entityName);
 
                 var entityType = entityInfo.ClrType;
                 if (top <= 0) top = 25;
@@ -391,48 +393,36 @@ namespace XafTornado.Module.Services
                 var os = sos.Os;
                 var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityType);
 
-                // Retrieve all objects of this type
-                var allObjects = os.GetObjects(entityType);
-                IEnumerable<object> results = allObjects.Cast<object>();
+                // ponytail: load-all + in-memory filter; fine for a demo-sized DB,
+                // switch to criteria-based GetObjects when row counts matter.
+                IEnumerable<object> results = os.GetObjects(entityType).Cast<object>();
 
-                // Apply in-memory filters
-                var filterPairs = ParsePairs(filter);
-                foreach (var (key, value) in filterPairs)
+                foreach (var (key, value) in ParsePairs(filter))
                 {
-                    // Try scalar property first
                     var propInfo = entityInfo.Properties
                         .FirstOrDefault(p => p.Name.Equals(key, StringComparison.OrdinalIgnoreCase));
                     if (propInfo != null)
                     {
                         var member = typeInfo.FindMember(propInfo.Name);
-                        if (member != null)
+                        if (member == null) continue;
+                        if (propInfo.ClrType == typeof(string))
                         {
-                            // For string properties, use Contains (case-insensitive)
-                            if (propInfo.ClrType == typeof(string))
+                            results = results.Where(o =>
+                                member.GetValue(o) is string v && v.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0);
+                        }
+                        else
+                        {
+                            object converted;
+                            try { converted = ConvertValue(value, propInfo.ClrType); }
+                            catch
                             {
-                                results = results.Where(o =>
-                                {
-                                    var v = member.GetValue(o) as string;
-                                    return v != null && v.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0;
-                                });
+                                return Error($"Cannot convert filter value '{value}' to type '{propInfo.TypeName}' for property '{key}'.");
                             }
-                            else
-                            {
-                                try
-                                {
-                                    var converted = ConvertValue(value, propInfo.ClrType);
-                                    results = results.Where(o => Equals(member.GetValue(o), converted));
-                                }
-                                catch
-                                {
-                                    return $"Cannot convert filter value '{value}' to type '{propInfo.TypeName}' for property '{key}'.";
-                                }
-                            }
+                            results = results.Where(o => Equals(member.GetValue(o), converted));
                         }
                         continue;
                     }
 
-                    // Try relationship (to-one navigation) — match by display text
                     var relInfo = entityInfo.Relationships
                         .FirstOrDefault(r => !r.IsCollection && r.PropertyName.Equals(key, StringComparison.OrdinalIgnoreCase));
                     if (relInfo != null)
@@ -441,41 +431,40 @@ namespace XafTornado.Module.Services
                         if (member != null)
                         {
                             results = results.Where(o =>
-                            {
-                                var refObj = member.GetValue(o);
-                                if (refObj == null) return false;
-                                var display = GetObjectDisplayText(refObj);
-                                return display.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0;
-                            });
+                                GetObjectDisplayText(member.GetValue(o))?.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0);
                         }
                         continue;
                     }
 
-                    var availableProps = string.Join(", ", entityInfo.Properties.Select(p => p.Name)
-                        .Concat(entityInfo.Relationships.Where(r => !r.IsCollection).Select(r => r.PropertyName)));
-                    return $"Property '{key}' not found on {entityInfo.Name}. Available: {availableProps}";
+                    return Json(new
+                    {
+                        error = $"Property '{key}' not found on {entityInfo.Name}.",
+                        availableProperties = SettableNames(entityInfo),
+                    });
                 }
 
-                var list = results.Take(top).ToList();
-                if (list.Count == 0) return $"No {entityInfo.Name} records found matching the given criteria.";
+                var list = results.Take(top + 1).ToList();
+                var truncated = list.Count > top;
+                if (truncated) list.RemoveAt(top);
 
-                var sb = new StringBuilder();
-                sb.AppendLine($"Found {list.Count} {entityInfo.Name} record(s):");
-                foreach (var obj in list)
-                    sb.AppendLine(FormatObject(obj, entityInfo, typeInfo));
-
-                var result = sb.ToString();
+                var result = Json(new
+                {
+                    entity = entityInfo.Name,
+                    count = list.Count,
+                    truncated = truncated ? true : (bool?)null,
+                    records = list.Select(o => ToRecord(o, entityInfo, typeInfo)).ToList(),
+                });
                 _logger.LogInformation("[Tool:query_entity] Returning {Len} chars, {Count} records", result.Length, list.Count);
                 return result;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:query_entity] Error");
-                return $"Error querying {entityName}: {ex.Message}";
+                return Error($"Error querying {entityName}: {ex.Message}");
             }
         }
 
-        [Description("Create a new record of any entity in the database. Call describe_entity first to see required fields, property types, and relationships.")]
+        [Description("Create a new record of any entity in the database. Call describe_entity first to see required fields, property types, and relationships. Returns JSON: { entity, id, created, values }.")]
         private string CreateEntity(
             [Description("Entity name to create (e.g. 'Customer', 'Order', 'Product'). Use list_entities to see available names.")] string entityName,
             [Description("Semicolon-separated 'PropertyName=value' pairs. For reference properties (relationships), provide a search term to match by name. Example: 'CompanyName=Acme Corp;Country=USA' or 'Customer=Acme;Status=New'.")] string properties)
@@ -483,20 +472,11 @@ namespace XafTornado.Module.Services
             _logger.LogInformation("[Tool:create_entity] Called with entity={Entity}, properties={Props}", entityName, properties);
             try
             {
-                if (string.IsNullOrWhiteSpace(entityName))
-                    return $"Entity name is required. Available entities: {GetEntityNameList()}";
-
-                var entityInfo = _schemaService.Schema.FindEntity(entityName);
-                if (entityInfo == null)
-                    return $"Entity '{entityName}' not found. Available entities: {GetEntityNameList()}";
+                var entityInfo = _schemaService.Schema.FindEntity(entityName ?? "");
+                if (entityInfo == null) return UnknownEntity(entityName);
 
                 if (string.IsNullOrWhiteSpace(properties))
-                {
-                    var availableProps = string.Join(", ", entityInfo.Properties.Select(p => p.Name));
-                    var availableRels = string.Join(", ", entityInfo.Relationships.Where(r => !r.IsCollection).Select(r => r.PropertyName));
-                    return $"Properties are required. {entityInfo.Name} properties: {availableProps}" +
-                           (string.IsNullOrEmpty(availableRels) ? "" : $". Relationships: {availableRels}");
-                }
+                    return Json(new { error = "Properties are required.", availableProperties = SettableNames(entityInfo) });
 
                 var entityType = entityInfo.ClrType;
                 using var sos = GetObjectSpace(entityType);
@@ -504,87 +484,62 @@ namespace XafTornado.Module.Services
                 var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityType);
 
                 var obj = os.CreateObject(entityType);
-                var pairs = ParsePairs(properties);
-                var setProperties = new List<string>();
+                var values = new Dictionary<string, object>();
 
-                foreach (var (key, value) in pairs)
+                foreach (var (key, value) in ParsePairs(properties))
                 {
-                    // Check if it's a scalar property
                     var propInfo = entityInfo.Properties
                         .FirstOrDefault(p => p.Name.Equals(key, StringComparison.OrdinalIgnoreCase));
                     if (propInfo != null)
                     {
                         var member = typeInfo.FindMember(propInfo.Name);
-                        if (member != null)
+                        if (member == null) continue;
+                        try
                         {
-                            try
-                            {
-                                var converted = ConvertValue(value, propInfo.ClrType);
-                                member.SetValue(obj, converted);
-                                setProperties.Add($"{propInfo.Name}: {FormatValue(converted)}");
-                            }
-                            catch (Exception ex)
-                            {
-                                return $"Error setting {propInfo.Name}: cannot convert '{value}' to {propInfo.TypeName}. {ex.Message}";
-                            }
+                            var converted = ConvertValue(value, propInfo.ClrType);
+                            member.SetValue(obj, converted);
+                            values[propInfo.Name] = converted;
+                        }
+                        catch (Exception ex)
+                        {
+                            return Error($"Error setting {propInfo.Name}: cannot convert '{value}' to {propInfo.TypeName}. {ex.Message}");
                         }
                         continue;
                     }
 
-                    // Check if it's a to-one relationship
                     var relInfo = entityInfo.Relationships
                         .FirstOrDefault(r => !r.IsCollection && r.PropertyName.Equals(key, StringComparison.OrdinalIgnoreCase));
                     if (relInfo != null)
                     {
-                        // Look up the referenced entity by searching for a natural key match
-                        var refObjects = os.GetObjects(relInfo.TargetClrType);
-                        object matched = null;
-                        foreach (var refObj in refObjects)
-                        {
-                            var display = GetObjectDisplayText(refObj);
-                            if (display.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0)
-                            {
-                                matched = refObj;
-                                break;
-                            }
-                        }
-
-                        if (matched == null)
-                        {
-                            // List some available values to help the user
-                            var available = refObjects.Cast<object>()
-                                .Take(10)
-                                .Select(GetObjectDisplayText);
-                            return $"{relInfo.PropertyName} '{value}' not found. Available {relInfo.TargetEntity} records: {string.Join(", ", available)}";
-                        }
-
+                        var (matched, error) = FindReference(os, relInfo, value);
+                        if (error != null) return error;
                         var member = typeInfo.FindMember(relInfo.PropertyName);
                         if (member != null)
                         {
                             member.SetValue(obj, matched);
-                            setProperties.Add($"{relInfo.PropertyName}: {GetObjectDisplayText(matched)}");
+                            values[relInfo.PropertyName] = GetObjectDisplayText(matched);
                         }
                         continue;
                     }
 
-                    // Property not found
-                    var allProps = string.Join(", ", entityInfo.Properties.Select(p => p.Name)
-                        .Concat(entityInfo.Relationships.Where(r => !r.IsCollection).Select(r => r.PropertyName)));
-                    return $"Property '{key}' not found on {entityInfo.Name}. Available: {allProps}";
+                    return Json(new
+                    {
+                        error = $"Property '{key}' not found on {entityInfo.Name}.",
+                        availableProperties = SettableNames(entityInfo),
+                    });
                 }
 
                 os.CommitChanges();
                 _navigationService?.RefreshActiveView();
 
-                var summary = string.Join(" | ", setProperties);
-                var result = $"{entityInfo.Name} created successfully! {summary}";
+                var result = Json(new { entity = entityInfo.Name, id = KeyOf(obj, typeInfo), created = true, values });
                 _logger.LogInformation("[Tool:create_entity] {Result}", result);
                 return result;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:create_entity] Error");
-                return $"Error creating {entityName}: {ex.Message}";
+                return Error($"Error creating {entityName}: {ex.Message}");
             }
         }
 
@@ -597,72 +552,61 @@ namespace XafTornado.Module.Services
             _logger.LogInformation("[Tool:navigate_to_list] Called with entity={Entity}", entityName);
             try
             {
-                if (string.IsNullOrWhiteSpace(entityName))
-                    return $"Entity name is required. Available entities: {GetEntityNameList()}";
-
-                var entityInfo = _schemaService.Schema.FindEntity(entityName);
-                if (entityInfo == null)
-                    return $"Entity '{entityName}' not found. Available entities: {GetEntityNameList()}";
+                var entityInfo = _schemaService.Schema.FindEntity(entityName ?? "");
+                if (entityInfo == null) return UnknownEntity(entityName);
 
                 _navigationService.NavigateToListView(entityName);
-                return $"Navigating to {entityInfo.Name} list view.";
+                return Json(new { action = "navigate_to_list", ok = true, entity = entityInfo.Name });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:navigate_to_list] Error");
-                return $"Error navigating to {entityName}: {ex.Message}";
+                return Error($"Error navigating to {entityName}: {ex.Message}");
             }
         }
 
         [Description("Navigate the user's application to a specific record's detail view. Use this when the user wants to open or view a particular record.")]
         private string NavigateToDetail(
             [Description("Entity name (e.g. 'Customer', 'Order'). Use list_entities to see available names.")] string entityName,
-            [Description("The record identifier — either a primary key (GUID) or a search term to match by name.")] string identifier)
+            [Description("The record identifier — the 'id' from a query_entity record (preferred), or a search term to match by name.")] string identifier)
         {
             _logger.LogInformation("[Tool:navigate_to_detail] Called with entity={Entity}, id={Id}", entityName, identifier);
             try
             {
-                if (string.IsNullOrWhiteSpace(entityName))
-                    return $"Entity name is required. Available entities: {GetEntityNameList()}";
-
-                var entityInfo = _schemaService.Schema.FindEntity(entityName);
-                if (entityInfo == null)
-                    return $"Entity '{entityName}' not found. Available entities: {GetEntityNameList()}";
+                var entityInfo = _schemaService.Schema.FindEntity(entityName ?? "");
+                if (entityInfo == null) return UnknownEntity(entityName);
 
                 if (string.IsNullOrWhiteSpace(identifier))
-                    return $"An identifier (key or search term) is required to find the record.";
+                    return Error("An identifier (id or search term) is required to find the record.");
 
                 _navigationService.NavigateToDetailView(entityName, identifier);
-                return $"Navigating to {entityInfo.Name} record matching '{identifier}'.";
+                return Json(new { action = "navigate_to_detail", ok = true, entity = entityInfo.Name, identifier });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:navigate_to_detail] Error");
-                return $"Error navigating to {entityName} detail: {ex.Message}";
+                return Error($"Error navigating to {entityName} detail: {ex.Message}");
             }
         }
 
         // -- Active view tools ---------------------------------------------------------
 
-        [Description("Get information about what the user is currently viewing in the application. Returns the entity name, view type (list or detail), view ID, and for detail views the specific record being viewed. Always call this first when the user refers to 'this record', 'the current view', 'this list', etc.")]
+        [Description("Get information about what the user is currently viewing in the application. Returns JSON with the entity name, view type (list or detail), view ID, and for detail views the specific record being viewed. Always call this first when the user refers to 'this record', 'the current view', 'this list', etc.")]
         private string GetActiveView()
         {
             _logger.LogInformation("[Tool:get_active_view] Called");
             try
             {
                 if (_activeViewContext == null || _activeViewContext.EntityName == null)
-                    return "No active view context available.";
+                    return Error("No active view context available.");
 
                 var entityInfo = _schemaService.Schema.FindEntity(_activeViewContext.EntityName);
-                var sb = new StringBuilder();
-                sb.AppendLine($"The user is currently viewing: **{_activeViewContext.EntityName}** ({(_activeViewContext.IsListView ? "List View" : "Detail View")})");
-                sb.AppendLine($"View ID: {_activeViewContext.ViewId}");
+                var isList = _activeViewContext.IsListView;
 
-                if (!_activeViewContext.IsListView && _activeViewContext.CurrentObjectDisplay != null)
+                object record = null;
+                if (!isList && _activeViewContext.CurrentObjectDisplay != null)
                 {
-                    sb.AppendLine($"Current record: **{_activeViewContext.CurrentObjectDisplay}** (key: {_activeViewContext.CurrentObjectKey})");
-
-                    // Show the record's current field values so the AI knows what can be changed
+                    Dictionary<string, object> fields = null;
                     if (entityInfo != null && _activeViewContext.CurrentObjectKey != null)
                     {
                         try
@@ -671,40 +615,38 @@ namespace XafTornado.Module.Services
                             var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityInfo.ClrType);
                             var key = ConvertValue(_activeViewContext.CurrentObjectKey, typeInfo.KeyMember.MemberType);
                             var obj = sos.Os.GetObjectByKey(entityInfo.ClrType, key);
-                            if (obj != null)
-                            {
-                                sb.AppendLine($"Fields: {FormatObject(obj, entityInfo, typeInfo)}");
-                            }
+                            if (obj != null) fields = ToRecord(obj, entityInfo, typeInfo);
                         }
                         catch
                         {
                             // Best effort — don't fail the tool if we can't load the record
                         }
                     }
+                    record = new
+                    {
+                        id = _activeViewContext.CurrentObjectKey,
+                        display = _activeViewContext.CurrentObjectDisplay,
+                        fields,
+                    };
                 }
 
-                if (entityInfo != null && _activeViewContext.IsListView)
+                return Json(new
                 {
-                    var props = string.Join(", ", entityInfo.Properties.Select(p => p.Name));
-                    sb.AppendLine($"Available properties for filtering: {props}");
-                    var rels = entityInfo.Relationships.Where(r => !r.IsCollection).Select(r => r.PropertyName);
-                    if (rels.Any())
-                        sb.AppendLine($"Relationships (can filter by): {string.Join(", ", rels)}");
-                }
-
-                if (entityInfo != null && !_activeViewContext.IsListView)
-                {
-                    var props = string.Join(", ", entityInfo.Properties.Select(p => p.Name));
-                    sb.AppendLine($"Editable properties: {props}");
-                    sb.AppendLine("Use update_entity to modify this record's fields.");
-                }
-
-                return sb.ToString();
+                    entity = _activeViewContext.EntityName,
+                    viewType = isList ? "list" : "detail",
+                    viewId = _activeViewContext.ViewId,
+                    record,
+                    filterableProperties = isList && entityInfo != null ? entityInfo.Properties.Select(p => p.Name).ToList() : null,
+                    filterableRelationships = isList && entityInfo != null
+                        ? entityInfo.Relationships.Where(r => !r.IsCollection).Select(r => r.PropertyName).ToList() is { Count: > 0 } rels ? rels : null
+                        : null,
+                    editableProperties = !isList && entityInfo != null ? SettableNames(entityInfo) : null,
+                });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:get_active_view] Error");
-                return $"Error getting active view: {ex.Message}";
+                return Error($"Error getting active view: {ex.Message}");
             }
         }
 
@@ -716,18 +658,18 @@ namespace XafTornado.Module.Services
             try
             {
                 if (_activeViewContext == null || !_activeViewContext.IsListView)
-                    return "No active list view to filter. Use navigate_to_list first to open a list view.";
+                    return Error("No active list view to filter. Use navigate_to_list first to open a list view.");
 
                 if (string.IsNullOrWhiteSpace(criteria))
-                    return "A criteria expression is required. Example: [Category.Name] = 'Grains'";
+                    return Error("A criteria expression is required. Example: [Category.Name] = 'Grains'");
 
                 _navigationService.FilterActiveList(criteria);
-                return $"Filter applied to {_activeViewContext.EntityName} list: {criteria}";
+                return Json(new { action = "filter_active_list", ok = true, entity = _activeViewContext.EntityName, criteria });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:filter_active_list] Error");
-                return $"Error filtering list: {ex.Message}";
+                return Error($"Error filtering list: {ex.Message}");
             }
         }
 
@@ -738,15 +680,15 @@ namespace XafTornado.Module.Services
             try
             {
                 if (_activeViewContext == null || !_activeViewContext.IsListView)
-                    return "No active list view to clear filter from.";
+                    return Error("No active list view to clear filter from.");
 
                 _navigationService.ClearActiveListFilter();
-                return $"Filter cleared from {_activeViewContext.EntityName} list. All records are now visible.";
+                return Json(new { action = "clear_active_list_filter", ok = true, entity = _activeViewContext.EntityName });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:clear_active_list_filter] Error");
-                return $"Error clearing filter: {ex.Message}";
+                return Error($"Error clearing filter: {ex.Message}");
             }
         }
 
@@ -759,12 +701,12 @@ namespace XafTornado.Module.Services
             try
             {
                 _navigationService.SaveActiveView();
-                return "Changes saved successfully.";
+                return Json(new { action = "save_active_view", ok = true });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:save_active_view] Error");
-                return $"Error saving: {ex.Message}";
+                return Error($"Error saving: {ex.Message}");
             }
         }
 
@@ -775,41 +717,34 @@ namespace XafTornado.Module.Services
             try
             {
                 _navigationService.CloseActiveView();
-                return "View closed.";
+                return Json(new { action = "close_active_view", ok = true });
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:close_active_view] Error");
-                return $"Error closing view: {ex.Message}";
+                return Error($"Error closing view: {ex.Message}");
             }
         }
 
         // -- Update tool ---------------------------------------------------------------
 
-        [Description("Update (modify) an existing record in the database. Use get_active_view first to find the current record's key when the user says 'this record' or 'change this'. You can also update any record by providing its entity name and identifier.")]
+        [Description("Update (modify) an existing record in the database. Use get_active_view first to find the current record's id when the user says 'this record' or 'change this'. You can also update any record by providing its entity name and identifier. Returns JSON: { entity, id, display, updated, changes: { Property: { from, to } } }.")]
         private string UpdateEntity(
             [Description("Entity name (e.g. 'Customer', 'Supplier', 'Product'). Use list_entities to see available names.")] string entityName,
-            [Description("The record identifier — either the primary key (GUID) or a search term to match by name. Use get_active_view to get the key of the currently viewed record.")] string identifier,
+            [Description("The record identifier — the 'id' from a query_entity record or get_active_view (preferred), or a search term to match by name.")] string identifier,
             [Description("Semicolon-separated 'PropertyName=value' pairs for fields to update. Example: 'ContactName=Just Testing;Country=Netherlands'. For reference properties, provide a search term to match by name.")] string properties)
         {
             _logger.LogInformation("[Tool:update_entity] Called with entity={Entity}, id={Id}, properties={Props}", entityName, identifier, properties);
             try
             {
-                if (string.IsNullOrWhiteSpace(entityName))
-                    return $"Entity name is required. Available entities: {GetEntityNameList()}";
-
-                var entityInfo = _schemaService.Schema.FindEntity(entityName);
-                if (entityInfo == null)
-                    return $"Entity '{entityName}' not found. Available entities: {GetEntityNameList()}";
+                var entityInfo = _schemaService.Schema.FindEntity(entityName ?? "");
+                if (entityInfo == null) return UnknownEntity(entityName);
 
                 if (string.IsNullOrWhiteSpace(identifier))
-                    return "An identifier (key or search term) is required. Use get_active_view to get the key of the current record.";
+                    return Error("An identifier (id or search term) is required. Use get_active_view to get the id of the current record.");
 
                 if (string.IsNullOrWhiteSpace(properties))
-                {
-                    var availableProps = string.Join(", ", entityInfo.Properties.Select(p => p.Name));
-                    return $"Properties to update are required. {entityInfo.Name} properties: {availableProps}";
-                }
+                    return Json(new { error = "Properties to update are required.", availableProperties = SettableNames(entityInfo) });
 
                 var entityType = entityInfo.ClrType;
                 using var sos = GetObjectSpace(entityType);
@@ -828,105 +763,77 @@ namespace XafTornado.Module.Services
                     // Not a valid key format — fall through to search
                 }
 
-                if (obj == null)
-                {
-                    // Search by display text
-                    var allObjects = os.GetObjects(entityType);
-                    foreach (var candidate in allObjects)
-                    {
-                        var display = GetObjectDisplayText(candidate);
-                        if (display != null && display.IndexOf(identifier, StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            obj = candidate;
-                            break;
-                        }
-                    }
-                }
+                obj ??= os.GetObjects(entityType).Cast<object>().FirstOrDefault(c =>
+                    GetObjectDisplayText(c)?.IndexOf(identifier, StringComparison.OrdinalIgnoreCase) >= 0);
 
                 if (obj == null)
-                    return $"No {entityInfo.Name} record found matching '{identifier}'.";
+                    return Error($"No {entityInfo.Name} record found matching '{identifier}'.");
 
-                var pairs = ParsePairs(properties);
-                var updatedProperties = new List<string>();
+                var changes = new Dictionary<string, object>();
 
-                foreach (var (key, value) in pairs)
+                foreach (var (key, value) in ParsePairs(properties))
                 {
-                    // Check scalar property
                     var propInfo = entityInfo.Properties
                         .FirstOrDefault(p => p.Name.Equals(key, StringComparison.OrdinalIgnoreCase));
                     if (propInfo != null)
                     {
                         var member = typeInfo.FindMember(propInfo.Name);
-                        if (member != null)
+                        if (member == null) continue;
+                        try
                         {
-                            try
-                            {
-                                var oldVal = member.GetValue(obj);
-                                var converted = ConvertValue(value, propInfo.ClrType);
-                                member.SetValue(obj, converted);
-                                updatedProperties.Add($"{propInfo.Name}: {FormatValue(oldVal)} → {FormatValue(converted)}");
-                            }
-                            catch (Exception ex)
-                            {
-                                return $"Error setting {propInfo.Name}: cannot convert '{value}' to {propInfo.TypeName}. {ex.Message}";
-                            }
+                            var oldVal = member.GetValue(obj);
+                            var converted = ConvertValue(value, propInfo.ClrType);
+                            member.SetValue(obj, converted);
+                            changes[propInfo.Name] = new { from = oldVal, to = converted };
+                        }
+                        catch (Exception ex)
+                        {
+                            return Error($"Error setting {propInfo.Name}: cannot convert '{value}' to {propInfo.TypeName}. {ex.Message}");
                         }
                         continue;
                     }
 
-                    // Check to-one relationship
                     var relInfo = entityInfo.Relationships
                         .FirstOrDefault(r => !r.IsCollection && r.PropertyName.Equals(key, StringComparison.OrdinalIgnoreCase));
                     if (relInfo != null)
                     {
-                        var refObjects = os.GetObjects(relInfo.TargetClrType);
-                        object matched = null;
-                        foreach (var refObj in refObjects)
-                        {
-                            var display = GetObjectDisplayText(refObj);
-                            if (display.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0)
-                            {
-                                matched = refObj;
-                                break;
-                            }
-                        }
-
-                        if (matched == null)
-                        {
-                            var available = refObjects.Cast<object>()
-                                .Take(10)
-                                .Select(GetObjectDisplayText);
-                            return $"{relInfo.PropertyName} '{value}' not found. Available {relInfo.TargetEntity} records: {string.Join(", ", available)}";
-                        }
-
+                        var (matched, error) = FindReference(os, relInfo, value);
+                        if (error != null) return error;
                         var member = typeInfo.FindMember(relInfo.PropertyName);
                         if (member != null)
                         {
                             var oldRef = member.GetValue(obj);
                             member.SetValue(obj, matched);
-                            updatedProperties.Add($"{relInfo.PropertyName}: {GetObjectDisplayText(oldRef)} → {GetObjectDisplayText(matched)}");
+                            changes[relInfo.PropertyName] = new { from = GetObjectDisplayText(oldRef), to = GetObjectDisplayText(matched) };
                         }
                         continue;
                     }
 
-                    var allProps = string.Join(", ", entityInfo.Properties.Select(p => p.Name)
-                        .Concat(entityInfo.Relationships.Where(r => !r.IsCollection).Select(r => r.PropertyName)));
-                    return $"Property '{key}' not found on {entityInfo.Name}. Available: {allProps}";
+                    return Json(new
+                    {
+                        error = $"Property '{key}' not found on {entityInfo.Name}.",
+                        availableProperties = SettableNames(entityInfo),
+                    });
                 }
 
                 os.CommitChanges();
                 _navigationService?.RefreshActiveView();
 
-                var summary = string.Join(" | ", updatedProperties);
-                var displayName = GetObjectDisplayText(obj);
-                var result = $"{entityInfo.Name} '{displayName}' updated successfully! Changes: {summary}";
+                var result = Json(new
+                {
+                    entity = entityInfo.Name,
+                    id = KeyOf(obj, typeInfo),
+                    display = GetObjectDisplayText(obj),
+                    updated = true,
+                    changes,
+                });
                 _logger.LogInformation("[Tool:update_entity] {Result}", result);
                 return result;
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[Tool:update_entity] Error");
-                return $"Error updating {entityName}: {ex.Message}";
+                return Error($"Error updating {entityName}: {ex.Message}");
             }
         }
     }
