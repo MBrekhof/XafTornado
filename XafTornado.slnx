@@ -8,4 +8,5 @@
   <Project Path="XafTornado/XafTornado.Module/XafTornado.Module.csproj" />
   <Project Path="XafTornado/XafTornado.Win/XafTornado.Win.csproj" />
   <Project Path="XafTornado/XafTornado.Tests/XafTornado.Tests.csproj" />
+  <Project Path="XafTornado/XafTornado.ToolTests/XafTornado.ToolTests.csproj" />
 </Solution>

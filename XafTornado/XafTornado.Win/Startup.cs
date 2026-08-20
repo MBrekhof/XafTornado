@@ -23,7 +23,6 @@ namespace XafTornado.Win
     {
         public static WinApplication BuildApplication(string connectionString)
         {
-            AppContext.SetSwitch("Npgsql.EnableLegacyTimestampBehavior", true);
             // Build configuration from appsettings.json so we can register AIChatService.
             var configuration = new ConfigurationBuilder()
                 .SetBasePath(AppDomain.CurrentDomain.BaseDirectory)
