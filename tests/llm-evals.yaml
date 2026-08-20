@@ -1,0 +1,53 @@
+# LLM evals — opt-in (needs a provider API key in appsettings.Development.json and the app running).
+# Assert on WHAT THE MODEL DID (tool-call trace), not on its wording. `with` values: strings match
+# case-insensitively by contains; wrap in /slashes/ for a regex.
+#
+#   dotnet run --project XafTornado/XafTornado.Tests -- tests/llm-evals.yaml
+name: LLM evals — tool selection
+base_url: http://localhost:5000
+clear_history: true
+
+steps:
+  - name: Count orders → query_entity(Order)
+    say: "How many orders are there in total?"
+    assert:
+      called:
+        - tool: query_entity
+          with: { entityName: Order }
+      not_called: [create_entity, update_entity]
+
+  - name: German customers → query_entity(Customer)
+    say: "Which customers are based in Germany?"
+    assert:
+      called:
+        - tool: query_entity
+          with: { entityName: Customer }
+      not_called: [create_entity, update_entity]
+
+  - name: Open list → navigate_to_list(Product)
+    say: "Open the product list for me."
+    assert:
+      called:
+        - tool: navigate_to_list
+          with: { entityName: Product }
+
+  - name: Unknown entity → describe/list, no mutation
+    say: "Show me the warehouses."
+    assert:
+      not_called: [create_entity, update_entity, navigate_to_detail]
+
+  - name: Open a record → navigate_to_detail(Customer)
+    say: "Open the detail view of the customer Alfreds Futterkiste."
+    assert:
+      called:
+        - tool: navigate_to_detail
+          with: { entityName: Customer, identifier: "/Alfreds|^[0-9a-f-]{36}$/" }   # name search or a real id — both are in the contract
+      not_called: [create_entity, update_entity]
+
+  - name: Schema question → describe_entity, no data pull
+    say: "What fields does an Invoice have?"
+    assert:
+      called:
+        - tool: describe_entity
+          with: { entityName: Invoice }
+      not_called: [query_entity]

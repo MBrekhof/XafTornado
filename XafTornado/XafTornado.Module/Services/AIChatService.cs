@@ -52,6 +52,16 @@ namespace XafTornado.Module.Services
         /// </summary>
         public string SystemMessage { get; set; }
 
+        /// <summary>One tool invocation made by the model during a turn.</summary>
+        public sealed record ToolCall(string Name, string Arguments, string Result);
+
+        // ponytail: singleton-wide "last turn" trace; fine for one dev/test user at a time,
+        // make it per-conversation when sessions are isolated (Phase 3 C).
+        private List<ToolCall> _lastToolCalls = new();
+
+        /// <summary>Tool calls made during the most recent <see cref="AskAsync"/>, in order. Used by LLM evals.</summary>
+        public IReadOnlyList<ToolCall> LastToolCalls => _lastToolCalls;
+
         public AIChatService(IOptions<AIOptions> optionsAccessor, ILogger<AIChatService> logger)
         {
             _options = optionsAccessor?.Value ?? new AIOptions();
@@ -93,6 +103,7 @@ namespace XafTornado.Module.Services
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
             EnsureInitialized();
+            _lastToolCalls = new List<ToolCall>();
 
             var provider = ResolveProvider(_options.Model);
             var pipeline = CreateRetryPipeline();
@@ -232,6 +243,13 @@ namespace XafTornado.Module.Services
         }
 
         private async Task<string> ExecuteToolAsync(string toolName, string argumentsJson)
+        {
+            var result = await ExecuteToolCoreAsync(toolName, argumentsJson);
+            _lastToolCalls.Add(new ToolCall(toolName, argumentsJson, result));
+            return result;
+        }
+
+        private async Task<string> ExecuteToolCoreAsync(string toolName, string argumentsJson)
         {
             if (ToolFunctions == null) return "Error: No tools registered.";
 

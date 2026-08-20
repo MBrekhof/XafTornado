@@ -11,7 +11,7 @@ layer** — schema discovery, filter parsing, create/update mapping, navigation 
 |---|-------|------|-------|-----------|
 | 1 | **Tool-level tests** (`XafTornado.ToolTests`, 24 tests) — invoke tools through `AIFunction.InvokeAsync` exactly like the model does, assert on JSON fields | xUnit, `WebApplicationFactory<Program>`, real PostgreSQL `xaftornado_test` dropped/recreated/seeded via `IDBUpdater` once per run | Docker `xaf-postgres` | every `dotnet test` |
 | 2 | **Smoke test** (`XafTornado.Smoke`, 1 test) — login → list view has rows → AI panel → one tool call via `/api/test/tool` | C# Playwright (`Microsoft.Playwright.NUnit`); `scripts/smoke.ps1` updates the DB, starts the app, runs it, stops the app | Docker `xaf-postgres`; Debug build | before a PR that touches startup/config/packages |
-| 3 | **LLM evals** — natural-language prompt → assert on the **tool-call trace**, not the prose | existing YAML runner (`XafTornado.Tests`) via `/api/test/*` | running app + provider API key | opt-in / manual |
+| 3 | **LLM evals** (`tests/llm-evals.yaml`, 6 prompts) — natural-language prompt → assert on the **tool-call trace** (`called:` / `not_called:` with argument matching), not the prose | YAML runner (`XafTornado.Tests`) via `/api/test/ask`, which returns the turn's tool calls | running app (Debug) + provider API key | opt-in / manual |
 
 ## Ground rules
 
@@ -33,7 +33,7 @@ layer** — schema discovery, filter parsing, create/update mapping, navigation 
    (mutation confirmation, security boundary), which rewrites the tool contract anyway.
 2. ~~Layer 1 xUnit project.~~ done 2026-08-20 (`XafTornado.ToolTests`).
 3. ~~Layer 2 smoke test.~~ done 2026-08-20 (`XafTornado.Smoke`, `scripts/smoke.ps1`).
-4. Demote the YAML runner to layer 3: trace-based assertions, gate `TestApiController`.
+4. ~~Demote the YAML runner to layer 3: trace-based assertions, gate `TestApiController`.~~ done 2026-08-20.
 
 Each step is its own branch + PR.
 
@@ -47,8 +47,23 @@ dotnet test XafTornado/XafTornado.ToolTests
 # Layer 2 — ~30 s; screenshot next to the test DLL on failure
 powershell -File scripts/smoke.ps1
 
-# Layer 3
+# Layer 3 — costs tokens; a failure prints the tool-call trace so you can see what the model did instead
 dotnet run --project XafTornado/XafTornado.Blazor.Server -- --updateDatabase --forceUpdate --silent
 dotnet run --project XafTornado/XafTornado.Blazor.Server --urls http://localhost:5000
-dotnet run --project XafTornado/XafTornado.Tests -- tests/sample-orders.yaml
+dotnet run --project XafTornado/XafTornado.Tests -- tests/llm-evals.yaml
 ```
+
+Eval assertion shape:
+
+```yaml
+- say: "Open the product list for me."
+  assert:
+    called:
+      - tool: navigate_to_list
+        with: { entityName: Product }      # strings: case-insensitive contains; "/regex/" supported
+    not_called: [create_entity, update_entity]
+```
+
+Write evals against the **tool contract**, not your preference: "open customer X" may legitimately be a
+name search *or* a query + id navigation — both are allowed by `navigate_to_detail`, so the eval accepts both.
+The old `contains:` / `count:` assertions still work for `tool:` steps (`tests/sample-orders.yaml`).

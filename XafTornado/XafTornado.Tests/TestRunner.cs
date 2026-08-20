@@ -8,6 +8,7 @@ public class TestRunner
 {
     private readonly HttpClient _http;
     private readonly Dictionary<string, string> _captures = new();
+    private List<ToolCallInfo> _lastToolCalls = new();
     private int _passed;
     private int _failed;
 
@@ -40,6 +41,7 @@ public class TestRunner
 
             string? result = null;
             string? error = null;
+            _lastToolCalls = new();
 
             try
             {
@@ -70,7 +72,7 @@ public class TestRunner
 
             if (step.Assert != null && result != null)
             {
-                var (passed, message) = AssertionEvaluator.Evaluate(step.Assert, result);
+                var (passed, message) = AssertionEvaluator.Evaluate(step.Assert, result, _lastToolCalls);
                 if (passed)
                 {
                     WriteColored("PASS", ConsoleColor.Green);
@@ -81,6 +83,8 @@ public class TestRunner
                     WriteColored("FAIL", ConsoleColor.Red);
                     Console.WriteLine($"       Assertion: {message}");
                     Console.WriteLine($"       Result:    {result.Truncate(300)}");
+                    if (_lastToolCalls.Count > 0)
+                        Console.WriteLine($"       Calls:     {string.Join(" -> ", _lastToolCalls.Select(c => $"{c.Name}{c.Arguments.GetRawText()}"))}");
                     _failed++;
                 }
             }
@@ -137,6 +141,11 @@ public class TestRunner
                 : response.ReasonPhrase;
             throw new Exception(errMsg ?? "HTTP error");
         }
+
+        if (json.TryGetProperty("toolCalls", out var calls))
+            _lastToolCalls = calls.EnumerateArray()
+                .Select(c => new ToolCallInfo(c.GetProperty("name").GetString() ?? "", c.GetProperty("arguments").Clone()))
+                .ToList();
 
         return json.GetProperty("result").GetString() ?? "";
     }

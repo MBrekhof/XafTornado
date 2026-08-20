@@ -64,9 +64,11 @@ namespace XafTornado.Blazor.Server.Controllers
         }
 
         /// <summary>
-        /// Send a natural-language prompt through the full AI tool loop and return the response.
+        /// Send a natural-language prompt through the full AI tool loop and return the response
+        /// plus the tool calls the model made this turn (for trace-based assertions).
         /// POST /api/test/ask
         /// Body: { "prompt": "How many orders are there?" }
+        /// Response: { "result": "...", "toolCalls": [{ "name": "query_entity", "arguments": {...}, "result": "{...}" }] }
         /// </summary>
         [HttpPost("ask")]
         public async Task<IActionResult> Ask([FromBody] AskRequest request)
@@ -77,7 +79,13 @@ namespace XafTornado.Blazor.Server.Controllers
             try
             {
                 var result = await _chatService.AskAsync(request.Prompt);
-                return Ok(new { result });
+                var toolCalls = _chatService.LastToolCalls.Select(c => new
+                {
+                    name = c.Name,
+                    arguments = JsonSerializer.Deserialize<JsonElement>(string.IsNullOrWhiteSpace(c.Arguments) ? "{}" : c.Arguments),
+                    result = c.Result,
+                }).ToList();
+                return Ok(new { result, toolCalls });
             }
             catch (Exception ex)
             {
