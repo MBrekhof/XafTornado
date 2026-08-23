@@ -308,4 +308,4 @@ This project started from the ideas in this two-part series. The current impleme
 
 ## License
 
-This project is provided as a reference implementation for educational purposes.
+[MIT](LICENSE). Take what is useful — ideas and code.
