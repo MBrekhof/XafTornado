@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
 using System.Reflection;
@@ -135,13 +136,12 @@ namespace XafTornado.Module.Services
                         continue;
                 }
 
-                var aiDescription = typeInfo.Type.GetCustomAttribute<AIDescriptionAttribute>();
                 var tableAttr = typeInfo.Type.GetCustomAttribute<TableAttribute>();
 
                 var entityInfo = new EntityInfo
                 {
                     Name = typeInfo.Name,
-                    Description = aiDescription?.Description,
+                    Description = DescriptionOf(typeInfo.Type),
                     TableName = tableAttr?.Name ?? typeInfo.Name,
                     ClrType = typeInfo.Type,
                 };
@@ -161,8 +161,7 @@ namespace XafTornado.Module.Services
                     if (memberAiVisible is { IsVisible: false })
                         continue;
 
-                    // Read [AIDescription] and [Column] on the property
-                    var memberAiDescription = memberClrProp?.GetCustomAttribute<AIDescriptionAttribute>();
+                    // Read [Column] on the property; the description comes from either attribute
                     var columnAttr = memberClrProp?.GetCustomAttribute<ColumnAttribute>();
 
                     // Navigation / collection property
@@ -199,7 +198,7 @@ namespace XafTornado.Module.Services
                     var propInfo = new EntityPropertyInfo
                     {
                         Name = member.Name,
-                        Description = memberAiDescription?.Description,
+                        Description = DescriptionOf(memberClrProp),
                         ColumnName = columnAttr?.Name ?? member.Name,
                         TypeName = GetFriendlyTypeName(member.MemberType),
                         ClrType = member.MemberType,
@@ -221,6 +220,24 @@ namespace XafTornado.Module.Services
 
             return new SchemaInfo { Entities = entities.OrderBy(e => e.Name).ToList() };
         }
+
+        /// <summary>
+        /// The description a class or property carries: <c>[AIDescription]</c> first, then
+        /// <c>[Description]</c>. Null when it carries neither, or when the member is unknown.
+        /// </summary>
+        /// <remarks>
+        /// The fallback is what makes an already-annotated XAF application legible here without
+        /// touching it twice. A general-purpose tool that annotates an existing model writes
+        /// <see cref="DescriptionAttribute"/> — it is the framework's own attribute and every XAF
+        /// application can already read it — and that prose is exactly what this prompt wants.
+        /// <para>
+        /// <c>[AIDescription]</c> still wins where both are present, so a description written for
+        /// the assistant is never overridden by one written for the UI.
+        /// </para>
+        /// </remarks>
+        public static string DescriptionOf(MemberInfo member) =>
+            member?.GetCustomAttribute<AIDescriptionAttribute>()?.Description
+            ?? member?.GetCustomAttribute<DescriptionAttribute>()?.Description;
 
         private static string GetFriendlyTypeName(Type type)
         {
