@@ -89,7 +89,7 @@ namespace XafTornado.Win
                 var schemaService = winApplication.ServiceProvider.GetRequiredService<SchemaDiscoveryService>();
                 schemaService.InvalidateCache();
                 var aiService = winApplication.ServiceProvider.GetRequiredService<AIChatService>();
-                aiService.SystemMessage = schemaService.GenerateSystemPrompt();
+                aiService.SystemPromptFactory = schemaService.GenerateSystemPrompt;
 
                 // Give AI tools a reference to the application + UI sync context so they
                 // can create ObjectSpaces on the UI thread (required in WinForms).

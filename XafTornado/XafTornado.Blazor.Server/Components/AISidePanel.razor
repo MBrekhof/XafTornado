@@ -2,10 +2,13 @@
 
 @using DevExpress.AIIntegration.Blazor.Chat
 @using DevExpress.Blazor
+@using DevExpress.ExpressApp.Security
+@using DevExpress.Persistent.Base
 @using XafTornado.Blazor.Server.Services
 @using XafTornado.Module.Services
 @inject IJSRuntime JS
 @inject BlazorNavigationService NavService
+@inject ISecurityStrategyBase Security
 @implements IDisposable
 
 <button class="copilot-toggle-btn @(IsOpen ? "panel-open" : "")"
@@ -25,11 +28,14 @@
     <div class="copilot-panel-header">
         <h5>AI Assistant</h5>
         <div class="copilot-panel-header-buttons">
-            <button class="copilot-panel-log-btn @(_showLog ? "active" : "")"
-                    @onclick="ToggleLog"
-                    title="@(_showLog ? "Hide AI Log" : "Show AI Log")">
-                &#x1F4CB;
-            </button>
+            @if (CanViewLog)
+            {
+                <button class="copilot-panel-log-btn @(_showLog ? "active" : "")"
+                        @onclick="ToggleLog"
+                        title="@(_showLog ? "Hide AI Log" : "Show AI Log")">
+                    &#x1F4CB;
+                </button>
+            }
             <button class="copilot-panel-close-btn" @onclick="ClosePanel" title="Close">&#x2715;</button>
         </div>
     </div>
@@ -52,7 +58,7 @@
                 </EmptyMessageAreaTemplate>
             </DxAIChat>
         }
-        @if (_showLog)
+        @if (_showLog && CanViewLog)
         {
             <AILogViewer />
         }
@@ -63,6 +69,24 @@
     private bool _isOpen;
     private bool _renderChat;
     private bool _showLog;
+
+    // The log store is process-wide and carries every user's tool results (SEC-004);
+    // until it is per-circuit, only administrators get to see it.
+    private bool CanViewLog
+    {
+        get
+        {
+            try
+            {
+                return Security.User is ISecurityUserWithRoles user
+                    && user.Roles.Any(r => r is IPermissionPolicyRole { IsAdministrative: true });
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
 
     private bool IsOpen
     {

@@ -26,7 +26,7 @@ namespace XafTornado.Module.Services
                 var toolsProvider = sp.GetRequiredService<AIToolsProvider>();
                 service.ToolFunctions = toolsProvider.Tools;
                 service.TornadoTools = toolsProvider.GetTornadoTools();
-                service.SystemMessage = sp.GetRequiredService<SchemaDiscoveryService>().GenerateSystemPrompt();
+                service.SystemPromptFactory = sp.GetRequiredService<SchemaDiscoveryService>().GenerateSystemPrompt;
                 return service;
             });
             services.AddSingleton<ActiveViewContext>();

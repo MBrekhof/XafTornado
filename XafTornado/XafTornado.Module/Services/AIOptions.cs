@@ -22,7 +22,13 @@ namespace XafTornado.Module.Services
         /// <summary>Max tool-calling iterations per message.</summary>
         public int MaxToolIterations { get; set; } = 10;
 
-        /// <summary>Request timeout in seconds.</summary>
+        /// <summary>Timeout for one chat turn (all model round-trips and tool calls), in seconds. 0 disables.</summary>
         public int TimeoutSeconds { get; set; } = 120;
+
+        /// <summary>
+        /// Also append the AI log panel entries to <c>ai-debug.log</c> next to the binaries.
+        /// Off by default: the entries include record values from every user's tool calls.
+        /// </summary>
+        public bool LogToFile { get; set; }
     }
 }

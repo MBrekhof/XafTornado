@@ -120,63 +120,68 @@ namespace XafTornado.Blazor.Server.Controllers
             }
 
             var entityType = entityInfo.ClrType;
-
-            if (string.IsNullOrEmpty(request.KeyValue))
+            var os = Application.CreateObjectSpace(entityType);
+            var shown = false;
+            try
             {
-                // Show a ListView using ShowViewFromCommonView (per DevExpress docs:
-                // "Ways to Show a View" > "Show a View from a Custom Context").
-                var os = Application.CreateObjectSpace(entityType);
-                var listViewId = Application.FindListViewId(entityType);
-                if (listViewId == null)
+                if (string.IsNullOrEmpty(request.KeyValue))
                 {
-                    _logger?.LogWarning("[NavExecutor] No ListView ID found for {Entity}", request.EntityName);
-                    os.Dispose();
-                    return;
-                }
-                _logger?.LogInformation("[NavExecutor] Navigating to ListView {ViewId}", listViewId);
-                var listView = Application.CreateListView(
-                    listViewId,
-                    Application.CreateCollectionSource(os, entityType, listViewId),
-                    true);
-                Application.ShowViewStrategy.ShowViewFromCommonView(listView);
-                _logger?.LogInformation("[NavExecutor] ShowViewFromCommonView completed for ListView");
-            }
-            else
-            {
-                var os = Application.CreateObjectSpace(entityType);
-                object obj = null;
-
-                if (Guid.TryParse(request.KeyValue, out var guidKey))
-                {
-                    obj = os.GetObjectByKey(entityType, guidKey);
-                    _logger?.LogInformation("[NavExecutor] GUID lookup: {Found}", obj != null);
-                }
-
-                if (obj == null)
-                {
-                    foreach (var item in os.GetObjects(entityType))
+                    // Show a ListView using ShowViewFromCommonView (per DevExpress docs:
+                    // "Ways to Show a View" > "Show a View from a Custom Context").
+                    var listViewId = Application.FindListViewId(entityType);
+                    if (listViewId == null)
                     {
-                        if (GetObjectDisplayText(item).IndexOf(request.KeyValue, StringComparison.OrdinalIgnoreCase) >= 0)
-                        {
-                            obj = item;
-                            break;
-                        }
+                        _logger?.LogWarning("[NavExecutor] No ListView ID found for {Entity}", request.EntityName);
+                        return;
                     }
-                    _logger?.LogInformation("[NavExecutor] Text search for '{Key}': {Found}", request.KeyValue, obj != null);
+                    _logger?.LogInformation("[NavExecutor] Navigating to ListView {ViewId}", listViewId);
+                    var listView = Application.CreateListView(
+                        listViewId,
+                        Application.CreateCollectionSource(os, entityType, listViewId),
+                        true);
+                    Application.ShowViewStrategy.ShowViewFromCommonView(listView);
+                    shown = true;
+                    _logger?.LogInformation("[NavExecutor] ShowViewFromCommonView completed for ListView");
                 }
-
-                if (obj == null)
+                else
                 {
-                    _logger?.LogWarning("[NavExecutor] No {Entity} record found matching '{Key}'", request.EntityName, request.KeyValue);
-                    os.Dispose();
-                    return;
-                }
+                    object obj = null;
 
-                _logger?.LogInformation("[NavExecutor] Creating DetailView for {Entity}, object={Display}",
-                    request.EntityName, GetObjectDisplayText(obj));
-                var detailView = Application.CreateDetailView(os, obj);
-                Application.ShowViewStrategy.ShowViewFromCommonView(detailView);
-                _logger?.LogInformation("[NavExecutor] ShowViewFromCommonView completed for DetailView");
+                    if (Guid.TryParse(request.KeyValue, out var guidKey))
+                    {
+                        obj = os.GetObjectByKey(entityType, guidKey);
+                        _logger?.LogInformation("[NavExecutor] GUID lookup: {Found}", obj != null);
+                    }
+
+                    if (obj == null)
+                    {
+                        var (match, candidates) = DisplayText.Resolve(os.GetObjects(entityType).Cast<object>(), request.KeyValue);
+                        _logger?.LogInformation("[NavExecutor] Text search for '{Key}': {Count} candidate(s)", request.KeyValue, candidates.Count);
+                        if (match == null && candidates.Count > 1)
+                        {
+                            _logger?.LogWarning("[NavExecutor] '{Key}' is ambiguous for {Entity}; not navigating", request.KeyValue, request.EntityName);
+                            return;
+                        }
+                        obj = match;
+                    }
+
+                    if (obj == null)
+                    {
+                        _logger?.LogWarning("[NavExecutor] No {Entity} record found matching '{Key}'", request.EntityName, request.KeyValue);
+                        return;
+                    }
+
+                    _logger?.LogInformation("[NavExecutor] Creating DetailView for {Entity}, object={Display}",
+                        request.EntityName, DisplayText.Of(obj));
+                    var detailView = Application.CreateDetailView(os, obj);
+                    Application.ShowViewStrategy.ShowViewFromCommonView(detailView);
+                    shown = true;
+                    _logger?.LogInformation("[NavExecutor] ShowViewFromCommonView completed for DetailView");
+                }
+            }
+            finally
+            {
+                if (!shown) os.Dispose(); // AI-009: the view owns the ObjectSpace only once it is shown
             }
         }
 
@@ -251,6 +256,13 @@ namespace XafTornado.Blazor.Server.Controllers
                 return;
             }
 
+            if (view.ObjectSpace.IsModified)
+            {
+                // Refresh() resets unsaved changes (dxdocs: BaseObjectSpace.Refresh); never on the user's behalf (AI-003).
+                _logger?.LogWarning("[NavExecutor] Refresh skipped: {ViewId} has unsaved changes", view.Id);
+                return;
+            }
+
             _logger?.LogInformation("[NavExecutor] Refreshing active view {ViewId}", view.Id);
 
             view.ObjectSpace.Refresh();
@@ -308,22 +320,5 @@ namespace XafTornado.Blazor.Server.Controllers
             _logger?.LogInformation("[NavExecutor] View closed: {ViewId}", view.Id);
         }
 
-        // -- Helpers -------------------------------------------------------------------
-
-        private static string GetObjectDisplayText(object obj)
-        {
-            if (obj == null) return string.Empty;
-            var type = obj.GetType();
-            foreach (var propName in new[] { "Name", "CompanyName", "Title", "FullName", "FirstName", "Description", "InvoiceNumber" })
-            {
-                var prop = type.GetProperty(propName);
-                if (prop != null)
-                {
-                    var val = prop.GetValue(obj);
-                    if (val != null) return val.ToString();
-                }
-            }
-            return obj.ToString();
-        }
     }
 }
