@@ -99,6 +99,34 @@ public class ScopeIsolationTests(AppFixture app)
     }
 
     [Fact]
+    public async Task LogPanelTrace_IsPerScope()   // SEC-004
+    {
+        using var a = app.Services.CreateScope();
+        using var b = app.Services.CreateScope();
+        var logA = a.ServiceProvider.GetRequiredService<AILogScope>();
+        var logB = b.ServiceProvider.GetRequiredService<AILogScope>();
+        var toolsA = a.ServiceProvider.GetRequiredService<AIToolsProvider>().Tools;
+
+        // A's tool call, with its arguments and result, lands in A's trace only.
+        var result = await Invoke(toolsA, "query_entity", new { entityName = "Customer", filter = "Country=Germany" });
+        Assert.Equal(3, result["count"]!.GetValue<int>());
+
+        var entry = Assert.Single(logA.GetEntries());
+        Assert.Equal("Tools", entry.Category);
+        Assert.Contains("query_entity", entry.Message);
+        Assert.Contains("Country=Germany", entry.Message);
+        Assert.Contains("Alfreds Futterkiste", entry.Message);   // the result is the user's own to see
+        Assert.Empty(logB.GetEntries());
+
+        // A failed call is an Error entry, and the exception still reaches the caller.
+        var fn = toolsA.Single(t => t.Name == "query_entity");
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            fn.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["entityName"] = "Order", ["top"] = "abc" })).AsTask());
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Error, logA.GetEntries().Last().Level);
+        Assert.Empty(logB.GetEntries());
+    }
+
+    [Fact]
     public async Task Dispatch_NeverSeesAnException_TheCallerDoes()
     {
         using var scope = app.Services.CreateScope();

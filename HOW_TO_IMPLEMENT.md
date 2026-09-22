@@ -50,8 +50,7 @@ Also copy the platform-agnostic interface and logging:
 | File | Purpose |
 |------|---------|
 | `INavigationService.cs` | Platform-agnostic interface for navigation, filtering, save, and close. |
-| `AILogStore.cs` | In-memory log store for AI debug logging. |
-| `AILoggerProvider.cs` | Custom logger provider that filters to AI-related categories. |
+| `AILogScope.cs` | Per-user (scoped) in-memory trace of turns and tool calls for the AI log panel. |
 
 **For Blazor Server**, also copy from `XafTornado.Blazor.Server/Services/`:
 

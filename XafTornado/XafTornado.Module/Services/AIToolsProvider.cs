@@ -29,6 +29,7 @@ namespace XafTornado.Module.Services
         private readonly ILogger<AIToolsProvider> _logger;
         private readonly INavigationService _navigationService;
         private readonly ActiveViewContext _activeViewContext;
+        private readonly AILogScope _log;
         private List<AIFunction> _tools;
 
         /// <summary>
@@ -49,13 +50,15 @@ namespace XafTornado.Module.Services
         public Func<Func<Task<object>>, Task<object>> Dispatch { get; set; }
 
         public AIToolsProvider(IServiceProvider serviceProvider, SchemaDiscoveryService schemaService,
-            INavigationService navigationService = null, ActiveViewContext activeViewContext = null)
+            INavigationService navigationService = null, ActiveViewContext activeViewContext = null,
+            AILogScope log = null)
         {
             _serviceProvider = serviceProvider ?? throw new ArgumentNullException(nameof(serviceProvider));
             _schemaService = schemaService ?? throw new ArgumentNullException(nameof(schemaService));
             _logger = serviceProvider.GetRequiredService<ILogger<AIToolsProvider>>();
             _navigationService = navigationService;
             _activeViewContext = activeViewContext;
+            _log = log;
         }
 
         public IReadOnlyList<AIFunction> Tools => _tools ??= CreateTools();
@@ -92,36 +95,54 @@ namespace XafTornado.Module.Services
         private AIFunction Tool(Delegate method, string name) =>
             new DispatchedFunction(AIFunctionFactory.Create(method, name), this);
 
-        /// <summary>Routes every invocation through <see cref="Dispatch"/> when one is set.</summary>
+        /// <summary>
+        /// Routes every invocation through <see cref="Dispatch"/> when one is set and records the
+        /// call in this scope's <see cref="AILogScope"/>.
+        /// </summary>
         private sealed class DispatchedFunction(AIFunction inner, AIToolsProvider owner) : DelegatingAIFunction(inner)
         {
             protected override async ValueTask<object> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
             {
                 var dispatch = owner.Dispatch;
-                if (dispatch == null)
-                    return await base.InvokeCoreAsync(arguments, cancellationToken);
+                var outcome = dispatch == null
+                    ? await GuardedAsync(arguments, cancellationToken)
+                    : await dispatch(() => GuardedAsync(arguments, cancellationToken));
 
-                // Nothing may throw across the platform dispatcher: an exception escaping
-                // BlazorApplication.InvokeAsync takes the circuit down (argument binding, e.g.
-                // top="abc", throws before the tool body's own catch). Capture and rethrow here.
-                var outcome = await dispatch(async () =>
-                {
-                    try
-                    {
-                        // Recheck: the turn may have been cancelled or reset (WinForms logoff) while
-                        // this call waited for the UI thread; the body must not run for the next user.
-                        cancellationToken.ThrowIfCancellationRequested();
-                        return await base.InvokeCoreAsync(arguments, cancellationToken);
-                    }
-                    catch (Exception ex)
-                    {
-                        return ExceptionDispatchInfo.Capture(ex);
-                    }
-                });
                 if (outcome is ExceptionDispatchInfo failure)
+                {
+                    owner._log?.Add(LogLevel.Error, "Tools", $"{Name}({Args(arguments)}) failed: {failure.SourceException.Message}");
                     failure.Throw();
+                }
+
+                owner._log?.Add(LogLevel.Information, "Tools", $"{Name}({Args(arguments)}) -> {Trim(outcome?.ToString())}");
                 return outcome;
             }
+
+            /// <summary>
+            /// Nothing may throw across the platform dispatcher: an exception escaping
+            /// BlazorApplication.InvokeAsync takes the circuit down (argument binding, e.g.
+            /// top="abc", throws before the tool body's own catch). Capture, rethrow on the caller's side.
+            /// </summary>
+            private async Task<object> GuardedAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
+            {
+                try
+                {
+                    // Recheck: the turn may have been cancelled or reset (WinForms logoff) while
+                    // this call waited for the UI thread; the body must not run for the next user.
+                    cancellationToken.ThrowIfCancellationRequested();
+                    return await base.InvokeCoreAsync(arguments, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    return ExceptionDispatchInfo.Capture(ex);
+                }
+            }
+
+            private static string Args(AIFunctionArguments arguments) =>
+                JsonSerializer.Serialize(arguments.ToDictionary(kv => kv.Key, kv => kv.Value), JsonOpts);
+
+            // ponytail: the panel shows one line per call; a 25-record query result is enough at 4 KB.
+            private static string Trim(string s) => s == null ? "null" : s.Length <= 4000 ? s : s[..4000] + "…";
         }
 
         /// <summary>

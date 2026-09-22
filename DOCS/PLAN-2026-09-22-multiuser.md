@@ -138,6 +138,12 @@ scoped `AILogScope`; `AILogViewer` injects that. Keep `AILoggerProvider` for the
 Interim until then (in the quick-fix PR): render `AILogViewer` only for administrative users and
 make the on-disk `ai-debug.log` opt-in.
 
+Implemented 2026-09-22 (`fix/per-scope-ai-log`, on top of Step 1): `AILogStore` + `AILoggerProvider`
++ `AI:LogToFile` are gone. The scoped `AILogScope` is written by `AIToolsProvider` (every call:
+name, arguments, result or error) and `AIChatService` (turn start, response with token usage,
+timeout, retries, tool failures); `AILogViewer` injects it. The admin-only gate on the panel is
+removed: the trace is the viewer's own. Executor and view-tracker lines now go to the console only.
+
 ### Step 4: truthful UI tools (AI-007), after Step 1
 
 `INavigationService` becomes:
