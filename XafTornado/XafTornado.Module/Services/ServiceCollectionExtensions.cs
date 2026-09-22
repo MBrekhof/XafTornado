@@ -20,26 +20,26 @@ namespace XafTornado.Module.Services
             services.AddSingleton<SchemaDiscoveryService>();
             services.AddSingleton<TornadoApiProvider>();
 
-            // Log store + logger provider for the AI log viewer panel.
-            services.AddSingleton<AILogStore>();
-            services.AddSingleton<ILoggerProvider, AILoggerProvider>();
-
             // Per user: one instance per Blazor circuit, one per WinForms process (SEC-002, SEC-003).
             // The tools are bound instance delegates on the scope's provider, so the conversation
-            // that executes them must come from the same scope.
+            // that executes them must come from the same scope. The log panel reads the same
+            // scope's trace, so it shows this user's calls only (SEC-004).
             services.AddScoped<ActiveViewContext>();
+            services.AddScoped<AILogScope>();
             services.AddScoped<AIToolsProvider>(sp =>
                 new AIToolsProvider(
                     sp,
                     sp.GetRequiredService<SchemaDiscoveryService>(),
                     sp.GetService<INavigationService>(),
-                    sp.GetRequiredService<ActiveViewContext>()));
+                    sp.GetRequiredService<ActiveViewContext>(),
+                    sp.GetRequiredService<AILogScope>()));
             services.AddScoped<AIChatService>(sp =>
             {
                 var service = new AIChatService(
                     sp.GetRequiredService<TornadoApiProvider>(),
                     sp.GetRequiredService<IOptions<AIOptions>>(),
-                    sp.GetRequiredService<ILogger<AIChatService>>());
+                    sp.GetRequiredService<ILogger<AIChatService>>(),
+                    sp.GetRequiredService<AILogScope>());
                 var toolsProvider = sp.GetRequiredService<AIToolsProvider>();
                 service.ToolFunctions = toolsProvider.Tools;
                 service.TornadoTools = toolsProvider.GetTornadoTools();

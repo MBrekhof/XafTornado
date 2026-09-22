@@ -29,6 +29,8 @@ namespace XafTornado.Module.Services
         private readonly AIOptions _options;
         private readonly TornadoApiProvider _apiProvider;
         private readonly ILogger<AIChatService> _logger;
+        private readonly AILogScope _log;   // this user's panel trace; the ILogger stays for the console
+        private int _turnLogGeneration;      // AILogScope.Generation at the start of the running turn
 
         // Conversation history for continuity across messages
         private readonly List<ChatMessageEntry> _history = new();
@@ -81,11 +83,13 @@ namespace XafTornado.Module.Services
             get { lock (_history) return _history.ToList(); }
         }
 
-        public AIChatService(TornadoApiProvider apiProvider, IOptions<AIOptions> optionsAccessor, ILogger<AIChatService> logger)
+        public AIChatService(TornadoApiProvider apiProvider, IOptions<AIOptions> optionsAccessor, ILogger<AIChatService> logger,
+            AILogScope log = null)
         {
             _apiProvider = apiProvider ?? throw new ArgumentNullException(nameof(apiProvider));
             _options = optionsAccessor?.Value ?? new AIOptions();
             _logger = logger;
+            _log = log;
         }
 
         public async Task<string> AskAsync(string prompt, CancellationToken cancellationToken = default)
@@ -119,6 +123,9 @@ namespace XafTornado.Module.Services
             // This turn's trace is a local: a Reset() mid-turn swaps _lastToolCalls for a fresh
             // list, and a late tool result must not land in the next conversation's trace.
             var calls = new List<ToolCall>();
+            // Every panel entry of this turn carries the log generation read now: a WinForms logoff
+            // clears the scope mid-turn, and a late entry must not land in the next user's trace.
+            _turnLogGeneration = _log?.Generation ?? 0;
             _lastToolCalls = calls;
 
             var model = CurrentModel;
@@ -141,6 +148,7 @@ namespace XafTornado.Module.Services
             {
                 _logger.LogWarning("[AskAsync] Turn timed out after {Seconds}s ({Iterations} tool iterations)",
                     _options.TimeoutSeconds, toolIterations);
+                _log?.Add(_turnLogGeneration, LogLevel.Warning, "Chat", $"Turn timed out after {_options.TimeoutSeconds}s ({toolIterations} tool iterations)");
                 // Tools that ran before the timeout may have committed: say so instead of inviting a replay.
                 var ran = calls.Select(c => c.Name).Distinct().ToList();
                 return ran.Count == 0
@@ -186,6 +194,7 @@ namespace XafTornado.Module.Services
 
                 _logger.LogInformation("[AskAsync] Sending (model={Model}, provider={Provider}, tools={Tools}, history={History})",
                     model, provider, TornadoTools?.Count ?? 0, history.Count);
+                _log?.Add(_turnLogGeneration, LogLevel.Information, "Chat", $"Turn: model={model}, provider={provider}, history={history.Count} messages");
 
                 // GetResponseRich(fnHandler) populates tool results in the conversation
                 // but does NOT automatically re-send to the LLM. We must loop manually:
@@ -277,6 +286,8 @@ namespace XafTornado.Module.Services
 
             _logger.LogInformation("[AskAsync] Response: {Len} chars, {Iterations} tool iterations",
                 finalText.Length, toolIterations);
+            _log?.Add(_turnLogGeneration, LogLevel.Information, "Chat", $"Response: {finalText.Length} chars, {toolIterations} tool iterations" +
+                (response?.Usage != null ? $", tokens in={response.Usage.PromptTokens} out={response.Usage.CompletionTokens}" : ""));
 
             return string.IsNullOrEmpty(finalText)
                 ? "No response received from the AI model. Please try again."
@@ -354,6 +365,7 @@ namespace XafTornado.Module.Services
             catch (Exception ex)
             {
                 _logger.LogError(ex, "[ExecuteTool] {Name} failed", toolName);
+                _log?.Add(_turnLogGeneration, LogLevel.Error, "Chat", $"{toolName} failed: {ex.Message}");
                 return $"Error executing {toolName}: {ex.Message}";
             }
         }
@@ -392,6 +404,8 @@ namespace XafTornado.Module.Services
                         _logger.LogWarning(args.Outcome.Exception,
                             "[Retry] Attempt {Attempt}/3 for model {Model}, retrying in {Delay:F1}s",
                             args.AttemptNumber + 1, model, args.RetryDelay.TotalSeconds);
+                        _log?.Add(_turnLogGeneration, LogLevel.Warning, "Chat",
+                            $"Retry {args.AttemptNumber + 1}/3 in {args.RetryDelay.TotalSeconds:F1}s: {args.Outcome.Exception?.Message}");
                         return ValueTask.CompletedTask;
                     }
                 })

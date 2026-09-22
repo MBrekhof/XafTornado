@@ -133,6 +133,7 @@ namespace XafTornado.Win
                 services.GetRequiredService<AIChatService>().Reset();
                 services.GetRequiredService<ActiveViewContext>().Clear();
                 services.GetRequiredService<WinNavigationService>().Clear();
+                services.GetRequiredService<AILogScope>().Clear();
             };
 
             try

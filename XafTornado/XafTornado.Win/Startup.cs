@@ -31,8 +31,9 @@ namespace XafTornado.Win
                 .Build();
 
             var builder = WinApplication.CreateBuilder();
-            // Register logging (required by AIChatService).
+            // Logging: no console in WinForms, so the AI categories go to XAF's own trace log.
             builder.Services.AddLogging();
+            builder.Services.AddSingleton<Microsoft.Extensions.Logging.ILoggerProvider, XafTracingLoggerProvider>();
             // Register the LLMTornado chat service and AI tools for DI.
             builder.Services.AddAIServices(configuration);
             // Enable DevExpress AI infrastructure (required by AIChatControl).
