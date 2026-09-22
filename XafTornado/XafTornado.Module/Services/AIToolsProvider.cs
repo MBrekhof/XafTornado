@@ -104,23 +104,25 @@ namespace XafTornado.Module.Services
             protected override async ValueTask<object> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
             {
                 var dispatch = owner.Dispatch;
+                var log = owner._log;
+                // The scope may be cleared while this call runs (turn reset, WinForms logoff): an
+                // entry written for the discarded conversation must not land in the next one.
+                var generation = log?.Generation ?? 0;
                 var outcome = dispatch == null
                     ? await GuardedAsync(arguments, cancellationToken)
                     : await dispatch(() => GuardedAsync(arguments, cancellationToken));
 
                 if (outcome is ExceptionDispatchInfo failure)
                 {
-                    // A cancelled call (turn reset, WinForms logoff) leaves no trace: its arguments
-                    // belong to the conversation that was just discarded.
                     if (failure.SourceException is not OperationCanceledException)
-                        owner._log?.Add(LogLevel.Error, "Tools", $"{Name}({Args(arguments)}) failed: {failure.SourceException.Message}");
+                        log?.Add(generation, LogLevel.Error, "Tools", $"{Name}({Args(arguments)}) failed: {failure.SourceException.Message}");
                     failure.Throw();
                 }
 
                 // Tool bodies catch their own exceptions and answer { "error": ... }: that is a warning, not a result.
                 var text = outcome?.ToString();
                 var level = text != null && text.StartsWith("{\"error\"", StringComparison.Ordinal) ? LogLevel.Warning : LogLevel.Information;
-                owner._log?.Add(level, "Tools", $"{Name}({Args(arguments)}) -> {Trim(text)}");
+                log?.Add(generation, level, "Tools", $"{Name}({Args(arguments)}) -> {Trim(text)}");
                 return outcome;
             }
 

@@ -37,8 +37,12 @@ namespace XafTornado.Module.Services
                 if (!IsEnabled(logLevel)) return;
                 var text = $"[{category}] {formatter(state, exception)}";
                 if (exception != null)
-                    Tracing.Tracer.LogError(exception);
-                if (logLevel >= LogLevel.Warning)
+                    text += $" | {exception.GetType().Name}: {exception.Message}";
+                // One-to-one with XAF's verbosity gates: an errors-only trace keeps every Error with
+                // its message, and a retry warning that carries an exception stays a warning.
+                if (logLevel >= LogLevel.Error)
+                    Tracing.Tracer.LogError(text);
+                else if (logLevel == LogLevel.Warning)
                     Tracing.Tracer.LogWarning(text);
                 else
                     Tracing.Tracer.LogText(text);

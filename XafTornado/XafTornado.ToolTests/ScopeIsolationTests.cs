@@ -135,6 +135,14 @@ public class ScopeIsolationTests(AppFixture app)
             Invoke(toolsA, "describe_entity", new { entityName = "Order" }, new CancellationToken(canceled: true)));
         Assert.Equal(before, logA.GetEntries().Count);
 
+        // A call that completed just before the scope was cleared (WinForms logoff between the UI
+        // thread finishing the body and the caller resuming) must not repopulate the cleared trace.
+        var providerA = a.ServiceProvider.GetRequiredService<AIToolsProvider>();
+        providerA.Dispatch = async body => { var r = await body(); logA.Clear(); return r; };
+        await Invoke(toolsA, "describe_entity", new { entityName = "Order" });
+        Assert.Empty(logA.GetEntries());
+        providerA.Dispatch = null;
+
         Assert.Empty(logB.GetEntries());
     }
 

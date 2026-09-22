@@ -20,6 +20,19 @@ namespace XafTornado.Module.Services
 
         public event Action<AILogEntry> OnNewEntry;
 
+        /// <summary>Bumped by <see cref="Clear"/>; a writer that started before a clear must not add.</summary>
+        public int Generation { get; private set; }
+
+        /// <summary>Adds unless the scope was cleared since <paramref name="generation"/> was read.</summary>
+        public void Add(int generation, LogLevel level, string category, string message)
+        {
+            lock (_lock)
+            {
+                if (generation != Generation) return;   // written for a conversation that is gone (WinForms logoff)
+            }
+            Add(level, category, message);
+        }
+
         public void Add(AILogEntry entry)
         {
             lock (_lock)
@@ -48,6 +61,7 @@ namespace XafTornado.Module.Services
             lock (_lock)
             {
                 _entries.Clear();
+                Generation++;
             }
         }
     }
