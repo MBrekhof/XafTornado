@@ -1,26 +1,22 @@
-using System.Threading;
 using System.Threading.Tasks;
-using DevExpress.Data.Filtering;
 using DevExpress.ExpressApp;
 using DevExpress.ExpressApp.Blazor;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using XafTornado.Blazor.Server.Services;
 using XafTornado.Module.Services;
 
 namespace XafTornado.Blazor.Server.Controllers
 {
     /// <summary>
-    /// Blazor-only WindowController that subscribes to <see cref="BlazorNavigationService"/>
-    /// events and executes navigation/filter requests within the XAF UI context.
-    /// AI tool calls run on background threads (AI SDK), so we capture the
-    /// Blazor circuit's <see cref="SynchronizationContext"/> during activation and
-    /// dispatch all UI work through it.
+    /// Blazor-only WindowController: runs the circuit's <see cref="NavigationRequestQueue"/> on the
+    /// circuit's synchronization context and gives <see cref="AIToolsProvider"/> the same dispatcher
+    /// for tool bodies. Because tool bodies run on that context, the queue is drained inline
+    /// and the tool gets the real outcome (AI-007).
     /// </summary>
     public class NavigationExecutorController : WindowController
     {
-        private const string AiFilterKey = "AIFilter";
-        private BlazorNavigationService _navService;
+        private NavigationRequestQueue _queue;
+        private UiRequestExecutor _executor;
         private AIToolsProvider _toolsProvider;
         private ILogger _logger;
 
@@ -34,14 +30,15 @@ namespace XafTornado.Blazor.Server.Controllers
             base.OnActivated();
             _logger = Application.ServiceProvider.GetService<ILogger<NavigationExecutorController>>();
             _logger?.LogInformation("[NavExecutor] Activated. BlazorApplication: {IsBlazor}", Application is BlazorApplication);
-            _navService = Application.ServiceProvider.GetService<INavigationService>() as BlazorNavigationService;
-            if (_navService != null)
+
+            _queue = Application.ServiceProvider.GetService<INavigationService>() as NavigationRequestQueue;
+            if (_queue != null)
             {
-                _navService.OnNavigationRequested += OnNavigationRequested;
-                _navService.OnFilterRequested += OnFilterRequested;
-                _navService.OnRefreshRequested += OnRefreshRequested;
-                _navService.OnSaveRequested += OnSaveRequested;
-                _navService.OnCloseRequested += OnCloseRequested;
+                _executor = new UiRequestExecutor(Application,
+                    Application.ServiceProvider.GetService<ActiveViewContext>(),
+                    Application.ServiceProvider.GetRequiredService<SchemaDiscoveryService>(),
+                    _logger);
+                _queue.OnRequest += OnRequest;
             }
 
             // Tool bodies run on the circuit's synchronization context, like the executor's own work.
@@ -60,279 +57,41 @@ namespace XafTornado.Blazor.Server.Controllers
                 _toolsProvider.Dispatch = null;
                 _toolsProvider = null;
             }
-            if (_navService != null)
+            if (_queue != null)
             {
-                _navService.OnNavigationRequested -= OnNavigationRequested;
-                _navService.OnFilterRequested -= OnFilterRequested;
-                _navService.OnRefreshRequested -= OnRefreshRequested;
-                _navService.OnSaveRequested -= OnSaveRequested;
-                _navService.OnCloseRequested -= OnCloseRequested;
-                _navService = null;
+                _queue.OnRequest -= OnRequest;
+                _queue = null;
+                _executor = null;
             }
             base.OnDeactivated();
         }
 
         /// <summary>
-        /// Dispatches an action to the Blazor circuit thread via BlazorApplication.InvokeAsync,
-        /// which restores the XAF ExecutionContext (including ValueManagerContext).
-        /// SynchronizationContext.Post alone doesn't restore ValueManagerContext, causing
-        /// failures in Application.CreateObjectSpace/ProcessShortcut.
+        /// BlazorApplication.InvokeAsync restores the XAF ExecutionContext (ValueManagerContext);
+        /// SynchronizationContext.Post alone does not. On the circuit's context already (tool bodies
+        /// are), it runs synchronously, which is what lets the tool read the outcome.
         /// </summary>
-        private void DispatchToUI(Action action)
+        private void OnRequest()
         {
             if (Application is BlazorApplication blazorApp)
             {
-                _logger?.LogInformation("[NavExecutor] Dispatching via BlazorApplication.InvokeAsync");
                 _ = blazorApp.InvokeAsync(() =>
                 {
-                    try
-                    {
-                        action();
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger?.LogError(ex, "[NavExecutor] Error in dispatched action");
-                    }
+                    Drain();
                     return Task.CompletedTask;
                 });
             }
             else
             {
-                _logger?.LogWarning("[NavExecutor] Not a BlazorApplication — executing directly");
-                action();
+                Drain();
             }
         }
 
-        // -- Navigation ----------------------------------------------------------------
-
-        private void OnNavigationRequested() => DispatchToUI(ProcessPendingNavigations);
-
-        private void ProcessPendingNavigations()
+        private void Drain()
         {
-            while (_navService != null && _navService.TryDequeueNavigation(out var request))
-            {
-                try
-                {
-                    _logger?.LogInformation("[NavExecutor] Processing navigation: {Entity} / {Key}", request.EntityName, request.KeyValue);
-                    ExecuteNavigation(request);
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogError(ex, "[NavExecutor] Navigation failed");
-                }
-            }
+            // Nothing between the claim (TryDequeue) and Run: Run always completes the request.
+            while (_queue != null && _queue.TryDequeue(out var request))
+                _executor.Run(request);
         }
-
-        private void ExecuteNavigation(NavigationRequest request)
-        {
-            var schemaService = Application.ServiceProvider.GetRequiredService<SchemaDiscoveryService>();
-            var entityInfo = schemaService.Schema.FindEntity(request.EntityName);
-            if (entityInfo == null)
-            {
-                _logger?.LogWarning("[NavExecutor] Entity '{Entity}' not found in schema", request.EntityName);
-                return;
-            }
-
-            var entityType = entityInfo.ClrType;
-            var os = Application.CreateObjectSpace(entityType);
-            var shown = false;
-            try
-            {
-                if (string.IsNullOrEmpty(request.KeyValue))
-                {
-                    // Show a ListView using ShowViewFromCommonView (per DevExpress docs:
-                    // "Ways to Show a View" > "Show a View from a Custom Context").
-                    var listViewId = Application.FindListViewId(entityType);
-                    if (listViewId == null)
-                    {
-                        _logger?.LogWarning("[NavExecutor] No ListView ID found for {Entity}", request.EntityName);
-                        return;
-                    }
-                    _logger?.LogInformation("[NavExecutor] Navigating to ListView {ViewId}", listViewId);
-                    var listView = Application.CreateListView(
-                        listViewId,
-                        Application.CreateCollectionSource(os, entityType, listViewId),
-                        true);
-                    Application.ShowViewStrategy.ShowViewFromCommonView(listView);
-                    shown = true;
-                    _logger?.LogInformation("[NavExecutor] ShowViewFromCommonView completed for ListView");
-                }
-                else
-                {
-                    object obj = null;
-
-                    if (Guid.TryParse(request.KeyValue, out var guidKey))
-                    {
-                        obj = os.GetObjectByKey(entityType, guidKey);
-                        _logger?.LogInformation("[NavExecutor] GUID lookup: {Found}", obj != null);
-                    }
-
-                    if (obj == null)
-                    {
-                        var (match, candidates) = DisplayText.Resolve(os.GetObjects(entityType).Cast<object>(), request.KeyValue);
-                        _logger?.LogInformation("[NavExecutor] Text search for '{Key}': {Count} candidate(s)", request.KeyValue, candidates.Count);
-                        if (match == null && candidates.Count > 1)
-                        {
-                            _logger?.LogWarning("[NavExecutor] '{Key}' is ambiguous for {Entity}; not navigating", request.KeyValue, request.EntityName);
-                            return;
-                        }
-                        obj = match;
-                    }
-
-                    if (obj == null)
-                    {
-                        _logger?.LogWarning("[NavExecutor] No {Entity} record found matching '{Key}'", request.EntityName, request.KeyValue);
-                        return;
-                    }
-
-                    _logger?.LogInformation("[NavExecutor] Creating DetailView for {Entity}, object={Display}",
-                        request.EntityName, DisplayText.Of(obj));
-                    var detailView = Application.CreateDetailView(os, obj);
-                    Application.ShowViewStrategy.ShowViewFromCommonView(detailView);
-                    shown = true;
-                    _logger?.LogInformation("[NavExecutor] ShowViewFromCommonView completed for DetailView");
-                }
-            }
-            finally
-            {
-                if (!shown) os.Dispose(); // AI-009: the view owns the ObjectSpace only once it is shown
-            }
-        }
-
-        // -- Filtering -----------------------------------------------------------------
-
-        private void OnFilterRequested() => DispatchToUI(ProcessPendingFilters);
-
-        private void ProcessPendingFilters()
-        {
-            while (_navService != null && _navService.TryDequeueFilter(out var request))
-            {
-                try
-                {
-                    _logger?.LogInformation("[NavExecutor] Processing filter: {Criteria}", request.CriteriaString ?? "(clear)");
-                    ExecuteFilter(request);
-                }
-                catch (Exception ex)
-                {
-                    _logger?.LogError(ex, "[NavExecutor] Filter failed");
-                }
-            }
-        }
-
-        private void ExecuteFilter(FilterRequest request)
-        {
-            // In Blazor XAF, Application.MainWindow.View is always null — the actual
-            // views live in nested frames. Use ActiveViewContext.ActiveFrame instead,
-            // which is set by ActiveViewTrackingController whenever the user navigates.
-            var activeViewContext = Application.ServiceProvider.GetService<ActiveViewContext>();
-            var view = activeViewContext?.ActiveFrame?.View as ListView;
-            if (view == null)
-            {
-                _logger?.LogWarning("[NavExecutor] No active ListView found. ActiveFrame={HasFrame}, FrameView={ViewType}",
-                    activeViewContext?.ActiveFrame != null, activeViewContext?.ActiveFrame?.View?.GetType().Name);
-                return;
-            }
-
-            _logger?.LogInformation("[NavExecutor] Applying filter to ListView {ViewId}", view.Id);
-
-            if (string.IsNullOrEmpty(request.CriteriaString))
-            {
-                // Clear AI filter
-                view.CollectionSource.Criteria.Remove(AiFilterKey);
-                _logger?.LogInformation("[NavExecutor] Filter cleared");
-            }
-            else
-            {
-                // Apply AI filter
-                var criteria = CriteriaOperator.Parse(request.CriteriaString);
-                view.CollectionSource.Criteria[AiFilterKey] = criteria;
-                _logger?.LogInformation("[NavExecutor] Filter applied: {Criteria}", criteria);
-            }
-
-            // Force the collection to reload so the Blazor UI reflects the change.
-            view.CollectionSource.ResetCollection();
-            _logger?.LogInformation("[NavExecutor] Collection reset after filter change");
-        }
-
-        // -- Refresh -------------------------------------------------------------------
-
-        private void OnRefreshRequested() => DispatchToUI(ExecuteRefresh);
-
-        private void ExecuteRefresh()
-        {
-            if (_navService == null || !_navService.ConsumeRefresh()) return;
-
-            var activeViewContext = Application.ServiceProvider.GetService<ActiveViewContext>();
-            var view = activeViewContext?.ActiveFrame?.View;
-            if (view == null)
-            {
-                _logger?.LogWarning("[NavExecutor] Refresh: No active view found");
-                return;
-            }
-
-            if (view.ObjectSpace.IsModified)
-            {
-                // Refresh() resets unsaved changes (dxdocs: BaseObjectSpace.Refresh); never on the user's behalf (AI-003).
-                _logger?.LogWarning("[NavExecutor] Refresh skipped: {ViewId} has unsaved changes", view.Id);
-                return;
-            }
-
-            _logger?.LogInformation("[NavExecutor] Refreshing active view {ViewId}", view.Id);
-
-            view.ObjectSpace.Refresh();
-
-            if (view is ListView listView)
-            {
-                listView.CollectionSource.ResetCollection();
-                _logger?.LogInformation("[NavExecutor] ListView collection reset after refresh");
-            }
-            else
-            {
-                _logger?.LogInformation("[NavExecutor] DetailView ObjectSpace refreshed");
-            }
-        }
-
-        // -- Save ----------------------------------------------------------------------
-
-        private void OnSaveRequested() => DispatchToUI(ExecuteSave);
-
-        private void ExecuteSave()
-        {
-            if (_navService == null || !_navService.ConsumeSave()) return;
-
-            var activeViewContext = Application.ServiceProvider.GetService<ActiveViewContext>();
-            var view = activeViewContext?.ActiveFrame?.View;
-            if (view == null)
-            {
-                _logger?.LogWarning("[NavExecutor] Save: No active view found");
-                return;
-            }
-
-            _logger?.LogInformation("[NavExecutor] Saving active view {ViewId}", view.Id);
-            view.ObjectSpace.CommitChanges();
-            _logger?.LogInformation("[NavExecutor] Save committed for {ViewId}", view.Id);
-        }
-
-        // -- Close ---------------------------------------------------------------------
-
-        private void OnCloseRequested() => DispatchToUI(ExecuteClose);
-
-        private void ExecuteClose()
-        {
-            if (_navService == null || !_navService.ConsumeClose()) return;
-
-            var activeViewContext = Application.ServiceProvider.GetService<ActiveViewContext>();
-            var view = activeViewContext?.ActiveFrame?.View;
-            if (view == null)
-            {
-                _logger?.LogWarning("[NavExecutor] Close: No active view found");
-                return;
-            }
-
-            _logger?.LogInformation("[NavExecutor] Closing active view {ViewId}", view.Id);
-            view.Close();
-            _logger?.LogInformation("[NavExecutor] View closed: {ViewId}", view.Id);
-        }
-
     }
 }

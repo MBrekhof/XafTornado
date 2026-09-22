@@ -1,7 +1,6 @@
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
-using XafTornado.Blazor.Server.Services;
 using XafTornado.Module.Services;
 
 namespace XafTornado.ToolTests;
@@ -38,17 +37,21 @@ public class ScopeIsolationTests(AppFixture app)
     {
         using var a = app.Services.CreateScope();
         using var b = app.Services.CreateScope();
-        var navA = a.ServiceProvider.GetRequiredService<BlazorNavigationService>();
-        var navB = b.ServiceProvider.GetRequiredService<BlazorNavigationService>();
+        var navA = a.ServiceProvider.GetRequiredService<NavigationRequestQueue>();
+        var navB = b.ServiceProvider.GetRequiredService<NavigationRequestQueue>();
+        var seenA = new List<UiRequest>();
+        var seenB = new List<UiRequest>();
+        AppFixture.AttachFakeExecutor(navA, seenA, () => NavigationResult.Success);
+        AppFixture.AttachFakeExecutor(navB, seenB, () => NavigationResult.Success);
 
-        // The tool enqueues into its own scope's service ...
+        // The tool submits to its own scope's service ...
         Assert.Same(navA, a.ServiceProvider.GetRequiredService<INavigationService>());
-        navA.FilterActiveList("[Country] = 'USA'");
+        Assert.True(navA.FilterActiveList("[Country] = 'USA'").Ok);
 
-        // ... and only that scope's executor can dequeue it.
-        Assert.False(navB.TryDequeueFilter(out _));
-        Assert.True(navA.TryDequeueFilter(out var request));
-        Assert.Equal("[Country] = 'USA'", request.CriteriaString);
+        // ... and only that scope's executor sees it.
+        Assert.Empty(seenB);
+        var request = Assert.Single(seenA);
+        Assert.Equal("[Country] = 'USA'", request.Criteria);
 
         var viewA = a.ServiceProvider.GetRequiredService<ActiveViewContext>();
         var viewB = b.ServiceProvider.GetRequiredService<ActiveViewContext>();
@@ -76,8 +79,10 @@ public class ScopeIsolationTests(AppFixture app)
         using var b = app.Services.CreateScope();
         var toolsA = a.ServiceProvider.GetRequiredService<AIToolsProvider>().Tools;
         var toolsB = b.ServiceProvider.GetRequiredService<AIToolsProvider>().Tools;
-        var navA = a.ServiceProvider.GetRequiredService<BlazorNavigationService>();
-        var navB = b.ServiceProvider.GetRequiredService<BlazorNavigationService>();
+        var seenA = new List<UiRequest>();
+        var seenB = new List<UiRequest>();
+        AppFixture.AttachFakeExecutor(a.ServiceProvider.GetRequiredService<NavigationRequestQueue>(), seenA, () => NavigationResult.Success);
+        AppFixture.AttachFakeExecutor(b.ServiceProvider.GetRequiredService<NavigationRequestQueue>(), seenB, () => NavigationResult.Success);
 
         // A is looking at a customer list; B has no view.
         a.ServiceProvider.GetRequiredService<ActiveViewContext>().Update("Customer", true, "Customer_ListView", typeof(object), null);
@@ -92,10 +97,10 @@ public class ScopeIsolationTests(AppFixture app)
         Assert.True(filterA["ok"]!.GetValue<bool>());
         Assert.StartsWith("No active list view", filterB["error"]!.GetValue<string>());
 
-        // The request went into A's queue only.
-        Assert.False(navB.TryDequeueFilter(out _));
-        Assert.True(navA.TryDequeueFilter(out var request));
-        Assert.Equal("[Country] = 'Germany'", request.CriteriaString);
+        // The request reached A's executor only.
+        Assert.Empty(seenB);
+        var request = Assert.Single(seenA);
+        Assert.Equal("[Country] = 'Germany'", request.Criteria);
     }
 
     [Fact]
@@ -171,7 +176,8 @@ public class ScopeIsolationTests(AppFixture app)
     {
         using var scope = app.Services.CreateScope();
         var tools = scope.ServiceProvider.GetRequiredService<AIToolsProvider>();
-        var nav = scope.ServiceProvider.GetRequiredService<BlazorNavigationService>();
+        var seen = new List<UiRequest>();
+        AppFixture.AttachFakeExecutor(scope.ServiceProvider.GetRequiredService<NavigationRequestQueue>(), seen, () => NavigationResult.Success);
         var cts = new CancellationTokenSource();
         tools.Dispatch = body => { cts.Cancel(); return body(); };   // logoff/reset while queued for the UI thread
 
@@ -180,7 +186,7 @@ public class ScopeIsolationTests(AppFixture app)
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             fn.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>()), cts.Token).AsTask());
 
-        Assert.False(nav.ConsumeSave());
+        Assert.Empty(seen);
     }
 
     private static async Task<System.Text.Json.Nodes.JsonNode> Invoke(IReadOnlyList<AIFunction> tools, string name, object? args = null, CancellationToken ct = default)

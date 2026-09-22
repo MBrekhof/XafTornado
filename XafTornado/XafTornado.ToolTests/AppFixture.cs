@@ -36,6 +36,14 @@ public sealed class AppFixture : IDisposable
     /// <summary>Root provider, for tests that need scopes of their own.</summary>
     public IServiceProvider Services => _factory.Services;
 
+    /// <summary>
+    /// The fixture scope's fake UI executor: records every request and answers with
+    /// <see cref="UiOutcome"/> (Success unless a test sets a failure). Headless tests have no
+    /// window, and a tool must never say "ok" on its own (AI-007).
+    /// </summary>
+    public List<UiRequest> UiRequests { get; } = new();
+    public NavigationResult UiOutcome { get; set; } = NavigationResult.Success;
+
     public AppFixture()
     {
         RecreateDatabase();
@@ -57,6 +65,21 @@ public sealed class AppFixture : IDisposable
 
         _scope = _factory.Services.CreateScope();
         Tools = _scope.ServiceProvider.GetRequiredService<AIToolsProvider>().Tools;
+        AttachFakeExecutor(_scope.ServiceProvider.GetRequiredService<NavigationRequestQueue>(), UiRequests, () => UiOutcome);
+    }
+
+    /// <summary>Gives a scope's queue an executor that records requests and answers with <paramref name="outcome"/>.</summary>
+    public static void AttachFakeExecutor(NavigationRequestQueue queue, List<UiRequest> recorded, Func<NavigationResult> outcome)
+    {
+        queue.OnRequest += () =>
+        {
+            while (queue.TryDequeue(out var request))
+            {
+                recorded.Add(request);
+                request.Outcome = outcome();
+                request.MarkDone();
+            }
+        };
     }
 
     /// <summary>Invoke a tool by name with an anonymous-object argument bag; returns the parsed JSON result.</summary>

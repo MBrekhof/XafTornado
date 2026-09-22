@@ -17,7 +17,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using XafTornado.Module.Services;
-using XafTornado.Win.Services;
 
 namespace XafTornado.Win
 {
@@ -132,7 +131,7 @@ namespace XafTornado.Win
             {
                 services.GetRequiredService<AIChatService>().Reset();
                 services.GetRequiredService<ActiveViewContext>().Clear();
-                services.GetRequiredService<WinNavigationService>().Clear();
+                services.GetRequiredService<NavigationRequestQueue>().Clear();
                 services.GetRequiredService<AILogScope>().Clear();
             };
 

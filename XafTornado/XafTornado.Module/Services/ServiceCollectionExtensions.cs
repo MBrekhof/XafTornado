@@ -26,6 +26,8 @@ namespace XafTornado.Module.Services
             // scope's trace, so it shows this user's calls only (SEC-004).
             services.AddScoped<ActiveViewContext>();
             services.AddScoped<AILogScope>();
+            services.AddScoped<NavigationRequestQueue>();
+            services.AddScoped<INavigationService>(sp => sp.GetRequiredService<NavigationRequestQueue>());
             services.AddScoped<AIToolsProvider>(sp =>
                 new AIToolsProvider(
                     sp,

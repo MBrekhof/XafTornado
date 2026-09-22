@@ -174,6 +174,28 @@ Verification: tool test with the fake executor set to fail: `save_active_view` r
 `{ ok: false, error }`. Playwright: validation error on a detail view + "save this" -> assistant
 reports the failure.
 
+Implemented 2026-09-22 (`fix/truthful-ui-tools`, on top of Step 3), simpler than the text above
+because Step 1 changed the ground: tool bodies already run on the circuit's synchronization
+context (`AIToolsProvider.Dispatch`), and both `BlazorApplication.InvokeAsync` (Blazor's
+`Dispatcher` runs inline when already on its context) and the WinForms `Control.InvokeRequired`
+check execute the executor **inline** from there. So no `TaskCompletionSource`, timeout or
+captured target view: `INavigationService` methods return `NavigationResult` synchronously, the
+`UiRequest` carries the outcome, and if no executor answered inline the request is abandoned and
+the tool answers `{ ok: false, error: "The application window did not execute the request." }`.
+Both platform services collapsed into `NavigationRequestQueue` (Module) and both executors into
+`UiRequestExecutor` (Module); the controllers only dispatch. `Save` commits the view's ObjectSpace;
+its `PersistenceValidationController` validates on `Committing` exactly as for the Save action
+(dxdocs: PersistenceValidationController), and the `ValidationException`, like a database
+rejection or the optimistic lock, becomes a failed result. A vetoed `Close` is a failure too.
+Known gap (Codex, pre-existing): the Blazor tabbed MDI strategy refuses a view silently once its
+tab limit is reached, and since `ViewShown` fires after `ShowViewFromCommonView` returns in
+Blazor, nothing synchronous tells that refusal from success; it still reads as ok. The hand-off is atomic (`UiRequest.TryClaim`
+/ `TryAbandon`): an executor on another thread (WinForms `BeginInvoke`) can neither run an
+abandoned request nor be lost after claiming one, in which case the submitter waits for it
+(Codex implementation review). Headless harnesses: `AppFixture` attaches
+a fake executor that records requests and answers a configurable outcome; the Debug
+`TestApiController` acknowledges requests so the evals keep asserting on the tool trace.
+
 ## 4. Risks and open questions
 
 - **Model switch per user** means `AIOptions.Model` becomes the default only. The picker card

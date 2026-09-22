@@ -1,5 +1,8 @@
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
 using Xunit;
+using XafTornado.Module.Services;
 
 namespace XafTornado.ToolTests;
 
@@ -261,13 +264,82 @@ public class MutationToolTests(AppFixture app)
 public class NavigationToolTests(AppFixture app)
 {
     [Fact]
-    public async Task NavigateToList_KnownEntity_Acknowledges()
+    public async Task NavigateToList_KnownEntity_RequestsTheUi_AndRelaysItsAnswer()
     {
+        app.UiRequests.Clear();
         var r = await app.Invoke("navigate_to_list", new { entityName = "Order" });
 
         Assert.Equal("navigate_to_list", r["action"]!.GetValue<string>());
         Assert.True(r["ok"]!.GetValue<bool>());
         Assert.Equal("Order", r["entity"]!.GetValue<string>());
+        var request = Assert.Single(app.UiRequests);
+        Assert.Equal(UiRequestKind.NavigateToList, request.Kind);
+        Assert.Equal("Order", request.EntityName);
+    }
+
+    [Fact]
+    public async Task UiTools_ReportTheUisFailure_InsteadOfOk()   // AI-007
+    {
+        app.UiOutcome = NavigationResult.Fail("Validation failed: Company Name must not be empty.");
+        try
+        {
+            var save = await app.Invoke("save_active_view");
+            Assert.False(save["ok"]!.GetValue<bool>());
+            Assert.Equal("Validation failed: Company Name must not be empty.", save["error"]!.GetValue<string>());
+
+            var nav = await app.Invoke("navigate_to_list", new { entityName = "Order" });
+            Assert.False(nav["ok"]!.GetValue<bool>());
+        }
+        finally
+        {
+            app.UiOutcome = NavigationResult.Success;
+        }
+    }
+
+    [Fact]
+    public void UiRequestHandOff_IsAtomic_AcrossThreads()   // AI-007, WinForms BeginInvoke path
+    {
+        // Executor claims inline but finishes on another thread: the submitter waits for the outcome.
+        var queue = new NavigationRequestQueue();
+        queue.OnRequest += () =>
+        {
+            Assert.True(queue.TryDequeue(out var request));
+            Task.Run(async () => { await Task.Delay(150); request.Outcome = NavigationResult.Fail("late no"); request.MarkDone(); });
+        };
+        var late = queue.SaveActiveView();
+        Assert.False(late.Ok);
+        Assert.Equal("late no", late.Error);
+
+        // Executor only gets to the queue after the submitter gave up: the request never runs.
+        var slow = new NavigationRequestQueue();
+        var ran = 0;
+        var drained = new ManualResetEventSlim(false);
+        slow.OnRequest += () => Task.Run(async () =>
+        {
+            await Task.Delay(150);
+            while (slow.TryDequeue(out _)) ran++;
+            drained.Set();
+        });
+        var abandoned = slow.SaveActiveView();
+        Assert.False(abandoned.Ok);
+        Assert.Equal(NavigationRequestQueue.NotConfirmed, abandoned.Error);
+        Assert.True(drained.Wait(5000));
+        Assert.Equal(0, ran);
+    }
+
+    [Fact]
+    public async Task UiTools_WithoutAnExecutor_SayNotConfirmed_NeverOk()   // AI-007
+    {
+        using var scope = app.Services.CreateScope();   // no window, no fake executor
+        var fn = scope.ServiceProvider.GetRequiredService<AIToolsProvider>().Tools.Single(t => t.Name == "save_active_view");
+
+        var result = await fn.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?>()));
+        var r = JsonNode.Parse(result!.ToString()!)!;
+
+        Assert.False(r["ok"]!.GetValue<bool>());
+        Assert.Equal(NavigationRequestQueue.NotConfirmed, r["error"]!.GetValue<string>());
+        // and the abandoned request is not left for a later executor
+        Assert.False(scope.ServiceProvider.GetRequiredService<NavigationRequestQueue>().TryDequeue(out _));
     }
 
     [Fact]

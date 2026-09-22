@@ -56,13 +56,13 @@ Also copy the platform-agnostic interface and logging:
 
 | File | Purpose |
 |------|---------|
-| `BlazorNavigationService.cs` | `INavigationService` implementation using a producer/consumer queue for UI-thread-safe navigation, filtering, save, and close operations. |
+| (none) | The `INavigationService` implementation (`NavigationRequestQueue`) and the executor logic (`UiRequestExecutor`) live in the Module; only the controller below is platform-specific. |
 
 **For WinForms**, also copy from `XafTornado.Win/Services/`:
 
 | File | Purpose |
 |------|---------|
-| `WinNavigationService.cs` | `INavigationService` implementation for WinForms with queue-based navigation, filtering, save, and close. |
+| (none) | WinForms shares the Module's `NavigationRequestQueue` and `UiRequestExecutor`; only the controller below is platform-specific. |
 
 **Important:** Update the namespace in `SchemaDiscoveryService.cs` to match your project:
 
@@ -90,14 +90,14 @@ Copy these **shared controllers** from `XafTornado.Module/Controllers/`:
 
 | File | Purpose |
 |------|---------|
-| `NavigationExecutorController.cs` | Dequeues navigation/filter/save/close requests from `BlazorNavigationService` and executes them on the XAF UI thread. |
+| `NavigationExecutorController.cs` | Drains the circuit's `NavigationRequestQueue` through `UiRequestExecutor` on the circuit's synchronization context, and gives `AIToolsProvider.Dispatch` the same dispatcher so tool bodies run there too. |
 
 **For WinForms**, also copy from `XafTornado.Win/Controllers/`:
 
 | File | Purpose |
 |------|---------|
 | `AISidePanelController.cs` | WindowController that adds a docked `AIChatControl` panel (right side, resizable) to the main window. |
-| `WinNavigationExecutorController.cs` | Dequeues navigation/filter/save/close requests from `WinNavigationService` and executes them on the WinForms UI thread. Handles `Window.TemplateChanged` for deferred UI control capture. |
+| `WinNavigationExecutorController.cs` | Drains the `NavigationRequestQueue` through `UiRequestExecutor` on the WinForms UI thread. Handles `Window.TemplateChanged` for deferred UI control capture. |
 
 ## Step 5: Copy the UI Components
 
@@ -142,13 +142,12 @@ var configuration = new ConfigurationBuilder()
 builder.Services.AddAIServices(configuration);
 builder.Services.AddDevExpressAI();
 
-// Register WinForms navigation service
-builder.Services.AddSingleton<WinNavigationService>();
-builder.Services.AddSingleton<INavigationService>(sp => sp.GetRequiredService<WinNavigationService>());
+// AddAIServices already registers the scoped NavigationRequestQueue as INavigationService.
 
-// ... after builder.Build():
-var service = winApplication.ServiceProvider.GetRequiredService<AIChatService>();
-AIExtensionsContainerDesktop.Default.RegisterChatClient(new AIChatClient(service));
+// ... after winApplication.Setup() (see Program.cs, WireAIServices): the AI services are scoped
+// and WinForms has one application scope, so resolve them from winApplication.ServiceProvider,
+// set AIToolsProvider.Application + Dispatch, reset them on LoggedOff, then
+AIExtensionsContainerDesktop.Default.RegisterChatClient(winApplication.ServiceProvider.GetRequiredService<IChatClient>());
 ```
 
 **WinForms** — in your `Program.cs`, after `winApplication.Setup()`:

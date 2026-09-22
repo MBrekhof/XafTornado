@@ -2,10 +2,9 @@
 
 @using DevExpress.AIIntegration.Blazor.Chat
 @using DevExpress.Blazor
-@using XafTornado.Blazor.Server.Services
 @using XafTornado.Module.Services
 @inject IJSRuntime JS
-@inject BlazorNavigationService NavService
+@inject NavigationRequestQueue NavService
 @implements IDisposable
 
 <button class="copilot-toggle-btn @(IsOpen ? "panel-open" : "")"

@@ -119,9 +119,11 @@ namespace XafTornado.Module.Services
                     failure.Throw();
                 }
 
-                // Tool bodies catch their own exceptions and answer { "error": ... }: that is a warning, not a result.
+                // Tool bodies catch their own exceptions and answer { "error": ... }, and UI tools answer
+                // { ok: false, error } when the window refused (AI-007): both are warnings, not results.
                 var text = outcome?.ToString();
-                var level = text != null && text.StartsWith("{\"error\"", StringComparison.Ordinal) ? LogLevel.Warning : LogLevel.Information;
+                var failed = text != null && (text.StartsWith("{\"error\"", StringComparison.Ordinal) || text.Contains("\"ok\":false", StringComparison.Ordinal));
+                var level = failed ? LogLevel.Warning : LogLevel.Information;
                 log?.Add(generation, level, "Tools", $"{Name}({Args(arguments)}) -> {Trim(text)}");
                 return outcome;
             }
@@ -641,8 +643,8 @@ namespace XafTornado.Module.Services
                 var entityInfo = _schemaService.Schema.FindEntity(entityName ?? "");
                 if (entityInfo == null) return UnknownEntity(entityName);
 
-                _navigationService.NavigateToListView(entityName);
-                return Json(new { action = "navigate_to_list", ok = true, entity = entityInfo.Name });
+                var ui = _navigationService.NavigateToListView(entityName);
+                return Json(new { action = "navigate_to_list", ok = ui.Ok, error = ui.Error, entity = entityInfo.Name });
             }
             catch (Exception ex)
             {
@@ -680,8 +682,8 @@ namespace XafTornado.Module.Services
                     display = GetObjectDisplayText(match);
                 }
 
-                _navigationService.NavigateToDetailView(entityName, key?.ToString() ?? identifier);
-                return Json(new { action = "navigate_to_detail", ok = true, entity = entityInfo.Name, identifier, id = key, display });
+                var ui = _navigationService.NavigateToDetailView(entityName, key?.ToString() ?? identifier);
+                return Json(new { action = "navigate_to_detail", ok = ui.Ok, error = ui.Error, entity = entityInfo.Name, identifier, id = key, display });
             }
             catch (Exception ex)
             {
@@ -764,8 +766,8 @@ namespace XafTornado.Module.Services
                 if (string.IsNullOrWhiteSpace(criteria))
                     return Error("A criteria expression is required. Example: [Category.Name] = 'Grains'");
 
-                _navigationService.FilterActiveList(criteria);
-                return Json(new { action = "filter_active_list", ok = true, entity = _activeViewContext.EntityName, criteria });
+                var ui = _navigationService.FilterActiveList(criteria);
+                return Json(new { action = "filter_active_list", ok = ui.Ok, error = ui.Error, entity = _activeViewContext.EntityName, criteria });
             }
             catch (Exception ex)
             {
@@ -783,8 +785,8 @@ namespace XafTornado.Module.Services
                 if (_activeViewContext == null || !_activeViewContext.IsListView)
                     return Error("No active list view to clear filter from.");
 
-                _navigationService.ClearActiveListFilter();
-                return Json(new { action = "clear_active_list_filter", ok = true, entity = _activeViewContext.EntityName });
+                var ui = _navigationService.ClearActiveListFilter();
+                return Json(new { action = "clear_active_list_filter", ok = ui.Ok, error = ui.Error, entity = _activeViewContext.EntityName });
             }
             catch (Exception ex)
             {
@@ -795,14 +797,14 @@ namespace XafTornado.Module.Services
 
         // -- Save / Close tools --------------------------------------------------------
 
-        [Description("Save (commit) changes in the currently active detail view. Use this when the user says 'save', 'save this', 'save changes', etc.")]
+        [Description("Save (commit) changes in the currently active detail view, after validation. Use this when the user says 'save', 'save this', 'save changes', etc. Returns JSON { ok, error? }: when ok is false, error says why; a validation or database rejection means nothing was saved, while 'has not finished' means the outcome is unknown and the data must be checked before repeating.")]
         private string SaveActiveView()
         {
             _logger.LogInformation("[Tool:save_active_view] Called");
             try
             {
-                _navigationService.SaveActiveView();
-                return Json(new { action = "save_active_view", ok = true });
+                var ui = _navigationService.SaveActiveView();
+                return Json(new { action = "save_active_view", ok = ui.Ok, error = ui.Error });
             }
             catch (Exception ex)
             {
@@ -817,8 +819,8 @@ namespace XafTornado.Module.Services
             _logger.LogInformation("[Tool:close_active_view] Called");
             try
             {
-                _navigationService.CloseActiveView();
-                return Json(new { action = "close_active_view", ok = true });
+                var ui = _navigationService.CloseActiveView();
+                return Json(new { action = "close_active_view", ok = ui.Ok, error = ui.Error });
             }
             catch (Exception ex)
             {
