@@ -1,9 +1,12 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.Extensions.AI;
 using XafTornado.Module.Services;
 
@@ -13,11 +16,27 @@ namespace XafTornado.Blazor.Server.Controllers
     /// Minimal REST API used by the XafTornado.Tests runner to execute AI tools
     /// and natural-language prompts directly against the running application.
     /// Only intended for development/testing — compiled out of Release builds:
-    /// it is unauthenticated and writes through a non-secured ObjectSpace.
+    /// it is unauthenticated and writes through a non-secured ObjectSpace, so it
+    /// only answers callers on the loopback interface (SEC-005).
     /// </summary>
 #if DEBUG
+    /// <summary>
+    /// Rejects callers that are not on the loopback interface. The in-process test host
+    /// (WebApplicationFactory) has no remote address and passes.
+    /// </summary>
+    public sealed class LoopbackOnlyAttribute : ActionFilterAttribute
+    {
+        public override void OnActionExecuting(ActionExecutingContext context)
+        {
+            var ip = context.HttpContext.Connection.RemoteIpAddress;
+            if (ip != null && !IPAddress.IsLoopback(ip))
+                context.Result = new StatusCodeResult(StatusCodes.Status403Forbidden);
+        }
+    }
+
     [ApiController]
     [Route("api/test")]
+    [LoopbackOnly]
     public class TestApiController : ControllerBase
     {
         private readonly AIToolsProvider _toolsProvider;

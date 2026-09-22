@@ -48,9 +48,10 @@ namespace XafTornado.Module.Services
         public IReadOnlyList<AIFunction> ToolFunctions { get; set; }
 
         /// <summary>
-        /// Optional system message appended to the AI session.
+        /// Produces the system prompt for each turn. A factory rather than a string so the
+        /// "current date and time" line is right on day two of an app run (AI-010).
         /// </summary>
-        public string SystemMessage { get; set; }
+        public Func<string> SystemPromptFactory { get; set; }
 
         /// <summary>One tool invocation made by the model during a turn.</summary>
         public sealed record ToolCall(string Name, string Arguments, string Result);
@@ -106,13 +107,37 @@ namespace XafTornado.Module.Services
             _lastToolCalls = new List<ToolCall>();
 
             var provider = ResolveProvider(_options.Model);
-            var pipeline = CreateRetryPipeline();
+            var attempt = new AttemptState();
+            var pipeline = CreateRetryPipeline(attempt);
             int toolIterations = 0;
+
+            // AIOptions.TimeoutSeconds bounds the whole turn: every model round-trip plus every tool call (AI-008).
+            using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_options.TimeoutSeconds > 0)
+                turnCts.CancelAfter(TimeSpan.FromSeconds(_options.TimeoutSeconds));
+
+            ChatRichResponse response;
+            try
+            {
+                response = await pipeline.ExecuteAsync(RunTurnAsync, turnCts.Token);
+            }
+            catch (OperationCanceledException) when (turnCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                _logger.LogWarning("[AskAsync] Turn timed out after {Seconds}s ({Iterations} tool iterations)",
+                    _options.TimeoutSeconds, toolIterations);
+                // Tools that ran before the timeout may have committed: say so instead of inviting a replay.
+                var ran = _lastToolCalls.Select(c => c.Name).Distinct().ToList();
+                return ran.Count == 0
+                    ? $"The AI request timed out after {_options.TimeoutSeconds} seconds. Please try again."
+                    : $"The AI request timed out after {_options.TimeoutSeconds} seconds. {_lastToolCalls.Count} tool call(s) already ran " +
+                      $"({string.Join(", ", ran)}); check the data before repeating a create or update.";
+            }
 
             // Build conversation inside the retry lambda so a fresh Conversation is created on each attempt
             // (LlmTornado's Conversation is stateful and may be corrupted after a failure)
-            var response = await pipeline.ExecuteAsync(async ct =>
+            async ValueTask<ChatRichResponse> RunTurnAsync(CancellationToken ct)
             {
+                attempt.ToolsRan = false;
                 var chatRequest = new ChatRequest
                 {
                     Model = new ChatModel(_options.Model, provider),
@@ -126,8 +151,9 @@ namespace XafTornado.Module.Services
                 var conversation = _api.Chat.CreateConversation(chatRequest);
 
                 // System prompt
-                if (!string.IsNullOrWhiteSpace(SystemMessage))
-                    conversation.AppendSystemMessage(SystemMessage);
+                var systemPrompt = SystemPromptFactory?.Invoke();
+                if (!string.IsNullOrWhiteSpace(systemPrompt))
+                    conversation.AppendSystemMessage(systemPrompt);
 
                 // Replay conversation history for continuity
                 foreach (var entry in _history)
@@ -156,17 +182,20 @@ namespace XafTornado.Module.Services
                 {
                     richResponse = await conversation.GetResponseRich(async functionCalls =>
                     {
+                        // From here on this attempt may have side effects: never replay it (AI-002).
+                        attempt.ToolsRan = true;
                         toolIterations++;
                         _logger.LogInformation("[ToolLoop] Iteration {Iter}: {Count} tool call(s)",
                             toolIterations, functionCalls.Count);
 
                         foreach (var fc in functionCalls)
                         {
-                            var result = await ExecuteToolAsync(fc.Name, fc.Arguments ?? "{}");
+                            ct.ThrowIfCancellationRequested();
+                            var result = await ExecuteToolAsync(fc.Name, fc.Arguments ?? "{}", ct);
                             _logger.LogInformation("[ToolLoop] {Name} → {ResultLen} chars", fc.Name, result.Length);
                             fc.Result = new FunctionResult(fc, result);
                         }
-                    }, cancellationToken);
+                    }, ct);
 
                     // Check if the response still contains unresolved tool calls
                     hasToolCalls = richResponse?.Blocks?.Any(b =>
@@ -180,7 +209,7 @@ namespace XafTornado.Module.Services
                     _logger.LogWarning("[ToolLoop] Hit max iterations ({Max})", _options.MaxToolIterations);
 
                 return richResponse;
-            }, cancellationToken);
+            }
 
             // Extract text from response
             var finalText = string.Empty;
@@ -242,14 +271,14 @@ namespace XafTornado.Module.Services
                 yield return response;
         }
 
-        private async Task<string> ExecuteToolAsync(string toolName, string argumentsJson)
+        private async Task<string> ExecuteToolAsync(string toolName, string argumentsJson, CancellationToken cancellationToken)
         {
-            var result = await ExecuteToolCoreAsync(toolName, argumentsJson);
+            var result = await ExecuteToolCoreAsync(toolName, argumentsJson, cancellationToken);
             _lastToolCalls.Add(new ToolCall(toolName, argumentsJson, result));
             return result;
         }
 
-        private async Task<string> ExecuteToolCoreAsync(string toolName, string argumentsJson)
+        private async Task<string> ExecuteToolCoreAsync(string toolName, string argumentsJson, CancellationToken cancellationToken)
         {
             if (ToolFunctions == null) return "Error: No tools registered.";
 
@@ -262,8 +291,12 @@ namespace XafTornado.Module.Services
                     ?? new Dictionary<string, object>();
 
                 var args = new AIFunctionArguments(dict);
-                var result = await function.InvokeAsync(args);
+                var result = await function.InvokeAsync(args, cancellationToken);
                 return result?.ToString() ?? "Tool returned no result.";
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -272,7 +305,13 @@ namespace XafTornado.Module.Services
             }
         }
 
-        private ResiliencePipeline CreateRetryPipeline()
+        /// <summary>Per-turn state the retry predicate consults; reset at the start of every attempt.</summary>
+        private sealed class AttemptState
+        {
+            public bool ToolsRan;
+        }
+
+        private ResiliencePipeline CreateRetryPipeline(AttemptState attempt)
         {
             return new ResiliencePipelineBuilder()
                 .AddRetry(new RetryStrategyOptions
@@ -283,7 +322,11 @@ namespace XafTornado.Module.Services
                     UseJitter = true,
                     ShouldHandle = new PredicateBuilder().Handle<Exception>(ex =>
                     {
-                        if (ex is TaskCanceledException or OperationCanceledException) return true;
+                        // A tool may have committed (create_entity/update_entity): replaying the turn
+                        // would let the model do it twice (AI-002). Surface the failure instead.
+                        if (attempt.ToolsRan) return false;
+                        // User stop or turn timeout is final, not a transient fault (AI-008).
+                        if (ex is OperationCanceledException) return false;
                         if (ex is HttpRequestException httpEx)
                         {
                             var status = (int)(httpEx.StatusCode ?? 0);

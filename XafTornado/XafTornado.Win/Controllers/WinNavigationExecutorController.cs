@@ -1,4 +1,5 @@
 using System;
+using System.Linq;
 using System.Windows.Forms;
 using DevExpress.Data.Filtering;
 using DevExpress.ExpressApp;
@@ -126,52 +127,57 @@ namespace XafTornado.Win.Controllers
             }
 
             var entityType = entityInfo.ClrType;
-
-            if (string.IsNullOrEmpty(request.KeyValue))
+            var os = Application.CreateObjectSpace(entityType);
+            var shown = false;
+            try
             {
-                var os = Application.CreateObjectSpace(entityType);
-                var listViewId = Application.FindListViewId(entityType);
-                if (listViewId == null)
+                if (string.IsNullOrEmpty(request.KeyValue))
                 {
-                    _logger?.LogWarning("[WinNavExecutor] No ListView ID for {Entity}", request.EntityName);
-                    os.Dispose();
-                    return;
-                }
-                var listView = Application.CreateListView(
-                    listViewId,
-                    Application.CreateCollectionSource(os, entityType, listViewId),
-                    true);
-                Application.ShowViewStrategy.ShowViewFromCommonView(listView);
-            }
-            else
-            {
-                var os = Application.CreateObjectSpace(entityType);
-                object obj = null;
-
-                if (Guid.TryParse(request.KeyValue, out var guidKey))
-                    obj = os.GetObjectByKey(entityType, guidKey);
-
-                if (obj == null)
-                {
-                    foreach (var item in os.GetObjects(entityType))
+                    var listViewId = Application.FindListViewId(entityType);
+                    if (listViewId == null)
                     {
-                        if (GetObjectDisplayText(item).Contains(request.KeyValue, StringComparison.OrdinalIgnoreCase))
-                        {
-                            obj = item;
-                            break;
-                        }
+                        _logger?.LogWarning("[WinNavExecutor] No ListView ID for {Entity}", request.EntityName);
+                        return;
                     }
+                    var listView = Application.CreateListView(
+                        listViewId,
+                        Application.CreateCollectionSource(os, entityType, listViewId),
+                        true);
+                    Application.ShowViewStrategy.ShowViewFromCommonView(listView);
+                    shown = true;
                 }
-
-                if (obj == null)
+                else
                 {
-                    _logger?.LogWarning("[WinNavExecutor] No {Entity} matching '{Key}'", request.EntityName, request.KeyValue);
-                    os.Dispose();
-                    return;
-                }
+                    object obj = null;
 
-                var detailView = Application.CreateDetailView(os, obj);
-                Application.ShowViewStrategy.ShowViewFromCommonView(detailView);
+                    if (Guid.TryParse(request.KeyValue, out var guidKey))
+                        obj = os.GetObjectByKey(entityType, guidKey);
+
+                    if (obj == null)
+                    {
+                        var (match, candidates) = DisplayText.Resolve(os.GetObjects(entityType).Cast<object>(), request.KeyValue);
+                        if (match == null && candidates.Count > 1)
+                        {
+                            _logger?.LogWarning("[WinNavExecutor] '{Key}' is ambiguous for {Entity}; not navigating", request.KeyValue, request.EntityName);
+                            return;
+                        }
+                        obj = match;
+                    }
+
+                    if (obj == null)
+                    {
+                        _logger?.LogWarning("[WinNavExecutor] No {Entity} matching '{Key}'", request.EntityName, request.KeyValue);
+                        return;
+                    }
+
+                    var detailView = Application.CreateDetailView(os, obj);
+                    Application.ShowViewStrategy.ShowViewFromCommonView(detailView);
+                    shown = true;
+                }
+            }
+            finally
+            {
+                if (!shown) os.Dispose(); // AI-009: the view owns the ObjectSpace only once it is shown
             }
         }
 
@@ -228,6 +234,12 @@ namespace XafTornado.Win.Controllers
             if (_navService == null || !_navService.ConsumeRefresh()) return;
             var view = GetActiveView();
             if (view == null) return;
+            if (view.ObjectSpace.IsModified)
+            {
+                // Refresh() resets unsaved changes (dxdocs: BaseObjectSpace.Refresh); never on the user's behalf (AI-003).
+                _logger?.LogWarning("[WinNavExecutor] Refresh skipped: {ViewId} has unsaved changes", view.Id);
+                return;
+            }
 
             view.ObjectSpace.Refresh();
             if (view is ListView lv)
@@ -251,22 +263,6 @@ namespace XafTornado.Win.Controllers
             var view = Application.MainWindow?.View;
             if (view != null) return view;
             return Application.ServiceProvider.GetService<ActiveViewContext>()?.ActiveFrame?.View;
-        }
-
-        private static string GetObjectDisplayText(object obj)
-        {
-            if (obj == null) return string.Empty;
-            var type = obj.GetType();
-            foreach (var propName in new[] { "Name", "CompanyName", "Title", "FullName", "FirstName", "Description", "InvoiceNumber" })
-            {
-                var prop = type.GetProperty(propName);
-                if (prop != null)
-                {
-                    var val = prop.GetValue(obj);
-                    if (val != null) return val.ToString();
-                }
-            }
-            return obj.ToString();
         }
     }
 }

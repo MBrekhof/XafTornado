@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace XafTornado.Module.Services
 {
@@ -12,12 +13,18 @@ namespace XafTornado.Module.Services
         private const int MaxEntries = 500;
         private readonly LinkedList<AILogEntry> _entries = new();
         private readonly object _lock = new();
+        private readonly bool _logToFile;
         private static readonly string LogFilePath = Path.Combine(
             AppDomain.CurrentDomain.BaseDirectory, "ai-debug.log");
 
         private static bool _logFileCleared;
 
         public event Action<AILogEntry> OnNewEntry;
+
+        public AILogStore(IOptions<AIOptions> options = null)
+        {
+            _logToFile = options?.Value?.LogToFile ?? false;
+        }
 
         public void Add(AILogEntry entry)
         {
@@ -28,20 +35,24 @@ namespace XafTornado.Module.Services
                     _entries.RemoveFirst();
             }
 
-            // Write to disk for debugging — clear on first write each app run
-            try
+            // Optional disk copy for debugging (AI:LogToFile). Off by default: entries carry
+            // record values from every user's tool calls (SEC-004). Cleared on first write each run.
+            if (_logToFile)
             {
-                if (!_logFileCleared)
+                try
                 {
-                    File.WriteAllText(LogFilePath, string.Empty);
-                    _logFileCleared = true;
-                }
+                    if (!_logFileCleared)
+                    {
+                        File.WriteAllText(LogFilePath, string.Empty);
+                        _logFileCleared = true;
+                    }
 
-                var level = entry.Level.ToString().Substring(0, 3).ToUpperInvariant();
-                var line = $"{entry.Timestamp:HH:mm:ss.fff} {level} {entry.Category,-15} {entry.Message}{Environment.NewLine}";
-                File.AppendAllText(LogFilePath, line);
+                    var level = entry.Level.ToString().Substring(0, 3).ToUpperInvariant();
+                    var line = $"{entry.Timestamp:HH:mm:ss.fff} {level} {entry.Category,-15} {entry.Message}{Environment.NewLine}";
+                    File.AppendAllText(LogFilePath, line);
+                }
+                catch { /* best effort */ }
             }
-            catch { /* best effort */ }
 
             OnNewEntry?.Invoke(entry);
         }

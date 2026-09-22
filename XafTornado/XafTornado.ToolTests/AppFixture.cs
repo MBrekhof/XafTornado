@@ -54,13 +54,13 @@ public sealed class AppFixture : IDisposable
     }
 
     /// <summary>Invoke a tool by name with an anonymous-object argument bag; returns the parsed JSON result.</summary>
-    public async Task<JsonNode> Invoke(string tool, object? args = null)
+    public async Task<JsonNode> Invoke(string tool, object? args = null, CancellationToken cancellationToken = default)
     {
         var fn = Tools.Single(f => f.Name == tool);
         var dict = args == null
             ? new Dictionary<string, object?>()
             : JsonSerializer.Deserialize<Dictionary<string, object?>>(JsonSerializer.Serialize(args))!;
-        var result = await fn.InvokeAsync(new AIFunctionArguments(dict!));
+        var result = await fn.InvokeAsync(new AIFunctionArguments(dict!), cancellationToken);
         var text = result?.ToString() ?? throw new InvalidOperationException($"{tool} returned null");
         return JsonNode.Parse(text) ?? throw new InvalidOperationException($"{tool} returned non-JSON: {text}");
     }

@@ -137,9 +137,17 @@ namespace XafTornado.Module.Services
 
             // Blazor: DI scope + INonSecuredObjectSpaceFactory (AsyncLocal carries context).
             var scope = _serviceProvider.CreateScope();
-            var factory = scope.ServiceProvider.GetRequiredService<INonSecuredObjectSpaceFactory>();
-            var os2 = factory.CreateNonSecuredObjectSpace(entityType);
-            return new ScopedObjectSpace(os2, scope);
+            try
+            {
+                var factory = scope.ServiceProvider.GetRequiredService<INonSecuredObjectSpaceFactory>();
+                var os2 = factory.CreateNonSecuredObjectSpace(entityType);
+                return new ScopedObjectSpace(os2, scope);
+            }
+            catch
+            {
+                scope.Dispose(); // AI-009: nobody else will
+                throw;
+            }
         }
 
         /// <summary>Wraps an IObjectSpace + IServiceScope for joint disposal.</summary>
@@ -156,8 +164,8 @@ namespace XafTornado.Module.Services
 
             public void Dispose()
             {
-                Os.Dispose();
-                _scope?.Dispose();
+                try { Os.Dispose(); }
+                finally { _scope?.Dispose(); }
             }
         }
 
@@ -220,20 +228,19 @@ namespace XafTornado.Module.Services
         /// Attempts to produce a human-readable label for an entity object
         /// by looking for common "name" properties.
         /// </summary>
-        private static string GetObjectDisplayText(object obj)
+        private static string GetObjectDisplayText(object obj) => DisplayText.Of(obj);
+
+        /// <summary>
+        /// JSON error for a name that matches several records: the model gets ids to disambiguate with.
+        /// </summary>
+        private static string AmbiguousError(string what, string term, List<object> candidates, Type type)
         {
-            if (obj == null) return null;
-            var type = obj.GetType();
-            foreach (var propName in new[] { "Name", "CompanyName", "FullName", "FirstName", "Title", "InvoiceNumber", "Description" })
+            var typeInfo = XafTypesInfo.Instance.FindTypeInfo(type);
+            return Json(new
             {
-                var prop = type.GetProperty(propName);
-                if (prop != null)
-                {
-                    var val = prop.GetValue(obj);
-                    if (val != null) return val.ToString();
-                }
-            }
-            return obj.ToString();
+                error = $"{what} '{term}' is ambiguous: {candidates.Count} records match. Use the exact name or the id.",
+                candidates = candidates.Take(10).Select(c => new { id = KeyOf(c, typeInfo), display = GetObjectDisplayText(c) }).ToList(),
+            });
         }
 
         /// <summary>
@@ -290,15 +297,37 @@ namespace XafTornado.Module.Services
         /// </summary>
         private (object Match, string Error) FindReference(IObjectSpace os, RelationshipInfo relInfo, string value)
         {
-            var refObjects = os.GetObjects(relInfo.TargetClrType).Cast<object>().ToList();
-            var matched = refObjects.FirstOrDefault(r =>
-                GetObjectDisplayText(r)?.IndexOf(value, StringComparison.OrdinalIgnoreCase) >= 0);
+            var (matched, candidates) = FindRecord(os, relInfo.TargetClrType, value);
             if (matched != null) return (matched, null);
+            if (candidates.Count > 1)
+                return (null, AmbiguousError(relInfo.PropertyName, value, candidates, relInfo.TargetClrType));
             return (null, Json(new
             {
                 error = $"{relInfo.PropertyName} '{value}' not found.",
-                available = refObjects.Take(10).Select(GetObjectDisplayText).ToList(),
+                available = os.GetObjects(relInfo.TargetClrType).Cast<object>().Take(10).Select(GetObjectDisplayText).ToList(),
             }));
+        }
+
+        /// <summary>
+        /// Resolves a record by its key first (the "id" every tool result carries), then by display
+        /// text via <see cref="DisplayText.Resolve"/>. Same contract as that method: a null
+        /// <c>Match</c> with several <c>Candidates</c> means ambiguous, with none means not found.
+        /// </summary>
+        private static (object Match, List<object> Candidates) FindRecord(IObjectSpace os, Type type, string identifier)
+        {
+            var typeInfo = XafTypesInfo.Instance.FindTypeInfo(type);
+            try
+            {
+                var key = ConvertValue(identifier, typeInfo.KeyMember.MemberType);
+                var byKey = os.GetObjectByKey(type, key);
+                if (byKey != null) return (byKey, [byKey]);
+            }
+            catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException)
+            {
+                // Not a key at all: fall through to the display-text search.
+            }
+
+            return DisplayText.Resolve(os.GetObjects(type).Cast<object>(), identifier);
         }
 
         // -- Tool implementations --------------------------------------------------
@@ -467,7 +496,8 @@ namespace XafTornado.Module.Services
         [Description("Create a new record of any entity in the database. Call describe_entity first to see required fields, property types, and relationships. Returns JSON: { entity, id, created, values }.")]
         private string CreateEntity(
             [Description("Entity name to create (e.g. 'Customer', 'Order', 'Product'). Use list_entities to see available names.")] string entityName,
-            [Description("Semicolon-separated 'PropertyName=value' pairs. For reference properties (relationships), provide a search term to match by name. Example: 'CompanyName=Acme Corp;Country=USA' or 'Customer=Acme;Status=New'.")] string properties)
+            [Description("Semicolon-separated 'PropertyName=value' pairs. For reference properties (relationships), provide the record's id or a search term to match by name. Example: 'CompanyName=Acme Corp;Country=USA' or 'Customer=Acme;Status=New'.")] string properties,
+            CancellationToken cancellationToken = default)
         {
             _logger.LogInformation("[Tool:create_entity] Called with entity={Entity}, properties={Props}", entityName, properties);
             try
@@ -529,12 +559,17 @@ namespace XafTornado.Module.Services
                     });
                 }
 
+                cancellationToken.ThrowIfCancellationRequested(); // AI-008: a stopped turn must not commit
                 os.CommitChanges();
                 _navigationService?.RefreshActiveView();
 
                 var result = Json(new { entity = entityInfo.Name, id = KeyOf(obj, typeInfo), created = true, values });
                 _logger.LogInformation("[Tool:create_entity] {Result}", result);
                 return result;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -579,8 +614,23 @@ namespace XafTornado.Module.Services
                 if (string.IsNullOrWhiteSpace(identifier))
                     return Error("An identifier (id or search term) is required to find the record.");
 
-                _navigationService.NavigateToDetailView(entityName, identifier);
-                return Json(new { action = "navigate_to_detail", ok = true, entity = entityInfo.Name, identifier });
+                // Resolve here, not in the executor: the executor runs later on the UI thread and can
+                // only log. The model needs "ambiguous" / "not found" as the tool result (AI-006).
+                object key;
+                string display;
+                using (var sos = GetObjectSpace(entityInfo.ClrType))
+                {
+                    var (match, candidates) = FindRecord(sos.Os, entityInfo.ClrType, identifier);
+                    if (match == null && candidates.Count > 1)
+                        return AmbiguousError(entityInfo.Name, identifier, candidates, entityInfo.ClrType);
+                    if (match == null)
+                        return Error($"No {entityInfo.Name} record found matching '{identifier}'.");
+                    key = KeyOf(match, XafTypesInfo.Instance.FindTypeInfo(entityInfo.ClrType));
+                    display = GetObjectDisplayText(match);
+                }
+
+                _navigationService.NavigateToDetailView(entityName, key?.ToString() ?? identifier);
+                return Json(new { action = "navigate_to_detail", ok = true, entity = entityInfo.Name, identifier, id = key, display });
             }
             catch (Exception ex)
             {
@@ -732,7 +782,8 @@ namespace XafTornado.Module.Services
         private string UpdateEntity(
             [Description("Entity name (e.g. 'Customer', 'Supplier', 'Product'). Use list_entities to see available names.")] string entityName,
             [Description("The record identifier — the 'id' from a query_entity record or get_active_view (preferred), or a search term to match by name.")] string identifier,
-            [Description("Semicolon-separated 'PropertyName=value' pairs for fields to update. Example: 'ContactName=Just Testing;Country=Netherlands'. For reference properties, provide a search term to match by name.")] string properties)
+            [Description("Semicolon-separated 'PropertyName=value' pairs for fields to update. Example: 'ContactName=Just Testing;Country=Netherlands'. For reference properties, provide the record's id or a search term to match by name.")] string properties,
+            CancellationToken cancellationToken = default)
         {
             _logger.LogInformation("[Tool:update_entity] Called with entity={Entity}, id={Id}, properties={Props}", entityName, identifier, properties);
             try
@@ -751,21 +802,10 @@ namespace XafTornado.Module.Services
                 var os = sos.Os;
                 var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityType);
 
-                // Try to find the object by primary key first, then by display text search
-                object obj = null;
-                try
-                {
-                    var key = ConvertValue(identifier, typeInfo.KeyMember.MemberType);
-                    obj = os.GetObjectByKey(entityType, key);
-                }
-                catch
-                {
-                    // Not a valid key format — fall through to search
-                }
-
-                obj ??= os.GetObjects(entityType).Cast<object>().FirstOrDefault(c =>
-                    GetObjectDisplayText(c)?.IndexOf(identifier, StringComparison.OrdinalIgnoreCase) >= 0);
-
+                // Key first (the id from query_entity / get_active_view), then display text.
+                var (obj, candidates) = FindRecord(os, entityType, identifier);
+                if (obj == null && candidates.Count > 1)
+                    return AmbiguousError(entityInfo.Name, identifier, candidates, entityType);
                 if (obj == null)
                     return Error($"No {entityInfo.Name} record found matching '{identifier}'.");
 
@@ -816,6 +856,7 @@ namespace XafTornado.Module.Services
                     });
                 }
 
+                cancellationToken.ThrowIfCancellationRequested(); // AI-008: a stopped turn must not commit
                 os.CommitChanges();
                 _navigationService?.RefreshActiveView();
 
@@ -829,6 +870,10 @@ namespace XafTornado.Module.Services
                 });
                 _logger.LogInformation("[Tool:update_entity] {Result}", result);
                 return result;
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
             }
             catch (Exception ex)
             {
