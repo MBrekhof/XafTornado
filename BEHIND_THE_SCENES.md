@@ -114,7 +114,7 @@ Returns the `EntityInfo` for Employee — including all its scalar properties (F
 using var sos = GetObjectSpace(entityType);
 ```
 
-Creates an `IObjectSpace` for the Employee type. In Blazor, this uses a DI scope with `INonSecuredObjectSpaceFactory`. In WinForms, this uses `XafApplication.CreateObjectSpace()` dispatched to the UI thread (because XAF's `SimpleValueManager` doesn't propagate application context to background threads). The ObjectSpace wraps EF Core's DbContext and handles the database connection.
+Creates the calling user's secured `IObjectSpace` for the Employee type. In Blazor, this is the circuit scope's `IObjectSpaceFactory`. In WinForms, this is `XafApplication.CreateObjectSpace()`; tool bodies run on the UI thread there (because XAF's `SimpleValueManager` doesn't propagate application context to background threads). XAF's permissions apply, and the tool checks them first so it can answer "permission denied" instead of an empty or silently unsaved result. The ObjectSpace wraps EF Core's DbContext and handles the database connection.
 
 ### 6c. Load All Employee Objects
 
@@ -269,6 +269,6 @@ User sees the answer
 
 - **Every turn's tool calls are traced.** `AIChatService.LastToolCalls` holds name, arguments and result for the last `AskAsync`. The Debug-only `/api/test/ask` returns it, and `tests/llm-evals.yaml` asserts on it (`called: query_entity with entityName: Employee`) — what the model *did*, not how it phrased the answer.
 
-- **XAF ObjectSpace handles all data access.** In Blazor, tools use `INonSecuredObjectSpaceFactory` via DI scopes. In WinForms, tools use `XafApplication.CreateObjectSpace()` dispatched to the UI thread. Both create short-lived ObjectSpaces per tool call, ensuring proper EF Core lifecycle management.
+- **XAF ObjectSpace handles all data access.** Tools use the calling user's secured ObjectSpace: the scope's `IObjectSpaceFactory` in Blazor, `XafApplication.CreateObjectSpace()` in WinForms. Both create short-lived ObjectSpaces per tool call, ensuring proper EF Core lifecycle management.
 
 - **Schema discovery happens once at startup.** `SchemaDiscoveryService` reflects over `ITypesInfo` on first access and caches the result. In WinForms, the cache is invalidated after `Application.Setup()` to ensure all XAF types are registered. The system prompt and tool definitions are built from this cached metadata, so there is no per-request reflection overhead.

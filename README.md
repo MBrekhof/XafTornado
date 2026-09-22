@@ -84,7 +84,7 @@ DOCS/                       TESTING.md (strategy), PHASE3.md (next work), REVIEW
 
 5. **Chat Flow** — User messages flow through `DxAIChat` (Blazor) or `AIChatControl` (WinForms) → `AIChatClient` (IChatClient adapter) → `AIChatService` → LLMTornado → AI model. The response streams back through the same chain and is rendered as formatted HTML.
 
-6. **Platform-Specific ObjectSpace Handling** — In Blazor, AI tools create ObjectSpaces via `INonSecuredObjectSpaceFactory` from DI scopes (AsyncLocal carries the XAF context). In WinForms, this factory doesn't work from manual DI scopes, so tools use `XafApplication.CreateObjectSpace()` directly, dispatched to the UI thread via `SynchronizationContext.Send()`.
+6. **Secured ObjectSpace per Tool Call** — AI tools read and write through the calling user's secured ObjectSpace: the circuit scope's `IObjectSpaceFactory` in Blazor, `XafApplication.CreateObjectSpace()` in WinForms (tool bodies run on the UI thread there). XAF's role permissions apply to every query and mutation; because a secured space filters reads and drops unauthorised writes silently, tools check permissions first and answer `{ "error": "permission denied", entity, operation }` so the assistant can say so.
 
 For a detailed step-by-step walkthrough of how a user question becomes a data-driven answer — including what the AI model sees, how it decides which tool to call, and how the query executes against the database — see **[Behind the Scenes](BEHIND_THE_SCENES.md)**.
 

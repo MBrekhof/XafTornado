@@ -108,6 +108,7 @@ public class ScopeIsolationTests(AppFixture app)
     {
         using var a = app.Services.CreateScope();
         using var b = app.Services.CreateScope();
+        XafTornado.Blazor.Server.Controllers.TestApiController.SignIn(a.ServiceProvider, "Admin");   // data tools need a user (SEC-001)
         var logA = a.ServiceProvider.GetRequiredService<AILogScope>();
         var logB = b.ServiceProvider.GetRequiredService<AILogScope>();
         var toolsA = a.ServiceProvider.GetRequiredService<AIToolsProvider>().Tools;
