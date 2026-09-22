@@ -7,7 +7,7 @@ namespace XafTornado.Module.Services
     {
         public const string SectionName = "AI";
 
-        /// <summary>Default model ID (e.g. "claude-sonnet-4-6", "gpt-4o").</summary>
+        /// <summary>Default model ID (e.g. "claude-sonnet-4-6", "gpt-5.5").</summary>
         public string Model { get; set; } = "claude-sonnet-4-6";
 
         /// <summary>Default provider if not derivable from model name.</summary>

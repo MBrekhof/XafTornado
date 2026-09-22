@@ -164,7 +164,7 @@ namespace XafTornado.Module.Services
                 attempt.ToolsRan = false;
                 var chatRequest = new ChatRequest
                 {
-                    Model = new ChatModel(model, provider),
+                    Model = ResolveModel(model, provider),
                     MaxTokens = _options.MaxOutputTokens,
                     Temperature = 1.0
                 };
@@ -411,6 +411,18 @@ namespace XafTornado.Module.Services
                 })
                 .Build();
         }
+
+        /// <summary>
+        /// The library's catalog entry when it knows the id, so endpoint capabilities come along:
+        /// gpt-6 rejects function tools on Chat Completions and needs the Responses endpoint,
+        /// which LlmTornado only selects for a catalog model. Unknown ids keep name + provider, and
+        /// so do aliases: the map resolves "mistral-large-latest" to a dated snapshot, which would
+        /// pin a "latest" id silently.
+        /// </summary>
+        private static ChatModel ResolveModel(string modelId, LLmProviders provider) =>
+            ChatModel.AllModelsMap.TryGetValue(modelId, out var known) && known is ChatModel catalog && catalog.Name == modelId
+                ? catalog
+                : new ChatModel(modelId, provider);
 
         private LLmProviders ResolveProvider(string modelId)
         {

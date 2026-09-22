@@ -1,6 +1,7 @@
 using DevExpress.ExpressApp;
 using DevExpress.ExpressApp.Actions;
 using DevExpress.Persistent.Base;
+using LlmTornado.Chat.Models;
 using Microsoft.Extensions.DependencyInjection;
 using XafTornado.Module.Services;
 
@@ -15,22 +16,23 @@ namespace XafTornado.Module.Controllers
         private SingleChoiceAction _selectModelAction;
 
         /// <summary>
-        /// Models available through LLMTornado (multi-provider).
-        /// Uses native provider model IDs.
+        /// Models available through LLMTornado (multi-provider), native provider model IDs.
+        /// Claude 5 entries come from the library's typed constants so the picker cannot offer a
+        /// model the installed LlmTornado does not recognise (3.8.68 added the Claude 5 header
+        /// logic). <see cref="AIOptions.Model"/> stays the default; nothing here changes it.
         /// </summary>
-        private static readonly string[] AvailableModels = new[]
+        private static readonly string[] AvailableModels = new string[]   // ChatModel -> string is implicit
         {
             // Anthropic
+            ChatModelAnthropicClaude5.ModelFable51,
+            ChatModelAnthropicClaude5.ModelOpus,
+            ChatModelAnthropicClaude5.ModelSonnet,
             "claude-sonnet-4-6",
-            "claude-sonnet-4-5",
-            "claude-opus-4-6",
-            // OpenAI
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4.1",
-            "gpt-4.1-mini",
-            "o3-mini",
-            "o4-mini",
+            ChatModelAnthropicClaude48.ModelOpus,
+            // OpenAI (ids verified against the models endpoint on 2026-09-22)
+            ChatModelOpenAiGpt6.ModelV6Astra,
+            "gpt-5.5",
+            "gpt-5-mini",
             // Google
             "gemini-2.5-pro",
             "gemini-2.5-flash",
