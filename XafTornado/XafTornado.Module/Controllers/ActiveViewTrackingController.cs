@@ -11,10 +11,14 @@ namespace XafTornado.Module.Controllers
     /// Uses <c>Application.ViewShown</c> which fires reliably on tab switches
     /// in Blazor's tabbed MDI — unlike ViewController.OnActivated which only
     /// fires once when a view is first opened.
+    /// For detail views it also follows <c>CurrentObjectChanged</c>: Next/Previous record
+    /// navigation swaps the object inside the same view without a ViewShown (AI-004).
     /// </summary>
     public class ActiveViewTrackingController : WindowController
     {
         private ILogger _logger;
+        private DetailView _trackedDetailView;
+        private Frame _trackedFrame;
 
         public ActiveViewTrackingController()
         {
@@ -32,6 +36,7 @@ namespace XafTornado.Module.Controllers
         protected override void OnDeactivated()
         {
             Application.ViewShown -= OnViewShown;
+            Untrack();
             base.OnDeactivated();
         }
 
@@ -51,12 +56,49 @@ namespace XafTornado.Module.Controllers
             }
 
             // Skip non-persistent views like AIChat that don't represent real data
-            var entityName = view.ObjectTypeInfo?.Name;
-            if (string.IsNullOrEmpty(entityName)) return;
+            if (string.IsNullOrEmpty(view.ObjectTypeInfo?.Name)) return;
 
+            if (view is DetailView detailView)
+                Track(detailView, e.TargetFrame);
+            else
+                Untrack();
+
+            Publish(view, e.TargetFrame);
+        }
+
+        private void OnTrackedCurrentObjectChanged(object sender, EventArgs e)
+        {
+            if (_trackedDetailView == null) return;
+            Publish(_trackedDetailView, _trackedFrame);
+        }
+
+        private void OnTrackedViewClosed(object sender, EventArgs e) => Untrack();
+
+        private void Track(DetailView detailView, Frame frame)
+        {
+            if (ReferenceEquals(_trackedDetailView, detailView)) return;
+            Untrack();
+            _trackedDetailView = detailView;
+            _trackedFrame = frame;
+            detailView.CurrentObjectChanged += OnTrackedCurrentObjectChanged;
+            detailView.Closed += OnTrackedViewClosed;
+        }
+
+        private void Untrack()
+        {
+            if (_trackedDetailView == null) return;
+            _trackedDetailView.CurrentObjectChanged -= OnTrackedCurrentObjectChanged;
+            _trackedDetailView.Closed -= OnTrackedViewClosed;
+            _trackedDetailView = null;
+            _trackedFrame = null;
+        }
+
+        private void Publish(View view, Frame frame)
+        {
             var context = Application.ServiceProvider.GetService<ActiveViewContext>();
             if (context == null) return;
 
+            var entityName = view.ObjectTypeInfo?.Name;
             var objectType = view.ObjectTypeInfo?.Type;
             var isListView = view is ListView;
 
@@ -76,10 +118,11 @@ namespace XafTornado.Module.Controllers
                 }
             }
 
-            context.Update(entityName, isListView, view.Id, objectType, e.TargetFrame, objectKey, objectDisplay);
+            context.Update(entityName, isListView, view.Id, objectType, frame, objectKey, objectDisplay);
             _logger?.LogInformation("[ViewTracker] Active view updated: {Entity} ({ViewType}) ViewId={ViewId} Object={Display}",
                 entityName, isListView ? "List" : "Detail", view.Id, objectDisplay ?? "(none)");
         }
+
         private static string GetObjectDisplayText(object obj)
         {
             if (obj == null) return null;

@@ -40,9 +40,9 @@ XafTornado.Module/          Platform-agnostic core (business objects, services, 
 
 XafTornado.Blazor.Server/   Blazor Server UI
   Services/
-    BlazorNavigationService       INavigationService impl (queue-based for UI thread safety)
+    (navigation lives in the Module: NavigationRequestQueue + UiRequestExecutor)
   Controllers/
-    NavigationExecutorController  Dequeues nav/filter/save/close on Blazor UI thread
+    NavigationExecutorController  Runs the circuit's UI requests on the Blazor sync context
     TestApiController             Debug-only REST bridge for tests (/api/test/tool, /ask, /clear)
   Editors/AIChatViewItem/         AIChat.razor (DxAIChat component)
   Components/
@@ -50,10 +50,10 @@ XafTornado.Blazor.Server/   Blazor Server UI
 
 XafTornado.Win/             WinForms UI
   Services/
-    WinNavigationService          INavigationService impl for WinForms (queue-based)
+    (navigation lives in the Module: NavigationRequestQueue + UiRequestExecutor)
   Controllers/
     AISidePanelController         Docked AIChatControl panel (right side, resizable)
-    WinNavigationExecutorController  Dequeues nav/filter/save/close on WinForms UI thread
+    WinNavigationExecutorController  Runs UI requests on the WinForms UI thread
   Editors/                        AIChatControl integration (ViewItem wrapper)
 
 XafTornado.ToolTests/       24 xUnit tests — tools invoked as the model invokes them, real PostgreSQL
@@ -65,7 +65,7 @@ DOCS/                       TESTING.md (strategy), PHASE3.md (next work), REVIEW
 
 ### How It Works
 
-1. **Startup** — `ServiceCollectionExtensions.AddAIServices()` registers all services; the `AIChatService` singleton is built with its tools and system prompt already attached, so every consumer (Blazor chat, WinForms, the test bridge) gets the same configured instance. `SchemaDiscoveryService` reflects over `ITypesInfo` to discover the data model. The system prompt and AI tools are generated dynamically from this metadata. In WinForms, schema discovery is re-run after `Application.Setup()` to ensure all XAF types are registered.
+1. **Startup** — `ServiceCollectionExtensions.AddAIServices()` registers all services; `AIChatService` is scoped (one conversation per Blazor circuit, one per WinForms process) and is built with its scope's tools and the system prompt already attached; only the `TornadoApi` is shared. `SchemaDiscoveryService` reflects over `ITypesInfo` to discover the data model. The system prompt and AI tools are generated dynamically from this metadata. In WinForms, schema discovery is re-run after `Application.Setup()` to ensure all XAF types are registered.
 
 2. **Multi-Provider Init** — `AIChatService` lazy-initializes a `TornadoApi` client from API keys configured in `appsettings.json` (or `appsettings.Development.json` for local keys). Multiple providers can be configured simultaneously; the correct one is auto-selected based on the model name prefix.
 
@@ -84,7 +84,7 @@ DOCS/                       TESTING.md (strategy), PHASE3.md (next work), REVIEW
 
 5. **Chat Flow** — User messages flow through `DxAIChat` (Blazor) or `AIChatControl` (WinForms) → `AIChatClient` (IChatClient adapter) → `AIChatService` → LLMTornado → AI model. The response streams back through the same chain and is rendered as formatted HTML.
 
-6. **Platform-Specific ObjectSpace Handling** — In Blazor, AI tools create ObjectSpaces via `INonSecuredObjectSpaceFactory` from DI scopes (AsyncLocal carries the XAF context). In WinForms, this factory doesn't work from manual DI scopes, so tools use `XafApplication.CreateObjectSpace()` directly, dispatched to the UI thread via `SynchronizationContext.Send()`.
+6. **Secured ObjectSpace per Tool Call** — AI tools read and write through the calling user's secured ObjectSpace: the circuit scope's `IObjectSpaceFactory` in Blazor, `XafApplication.CreateObjectSpace()` in WinForms (tool bodies run on the UI thread there). XAF's role permissions apply to every query and mutation; because a secured space filters reads and drops unauthorised writes silently, tools check permissions first and answer `{ "error": "permission denied", entity, operation }` so the assistant can say so.
 
 For a detailed step-by-step walkthrough of how a user question becomes a data-driven answer — including what the AI model sees, how it decides which tool to call, and how the query executes against the database — see **[Behind the Scenes](BEHIND_THE_SCENES.md)**.
 

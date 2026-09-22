@@ -22,7 +22,7 @@ namespace XafTornado.Module.Services
         /// <summary>Max tool-calling iterations per message.</summary>
         public int MaxToolIterations { get; set; } = 10;
 
-        /// <summary>Request timeout in seconds.</summary>
+        /// <summary>Timeout for one chat turn (all model round-trips and tool calls), in seconds. 0 disables.</summary>
         public int TimeoutSeconds { get; set; } = 120;
     }
 }

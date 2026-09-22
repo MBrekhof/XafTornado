@@ -47,8 +47,8 @@
     <PackageReference Include="DevExpress.AIIntegration.WinForms.Chat" Version="26.1.5" />
     <PackageReference Include="DevExpress.RichEdit.Export" Version="26.1.5" />
     <PackageReference Include="DevExpress.Win.Design" Version="26.1.5" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.*" />
-    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.*" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Json" Version="10.0.12" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\XafTornado.Module\XafTornado.Module.csproj" />

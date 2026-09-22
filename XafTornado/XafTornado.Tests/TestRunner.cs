@@ -15,6 +15,8 @@ public class TestRunner
     public TestRunner(string baseUrl)
     {
         _http = new HttpClient { BaseAddress = new Uri(baseUrl) };
+        // One conversation per run: the test API keeps history per session key, not per process.
+        _http.DefaultRequestHeaders.Add("X-Test-Session", Guid.NewGuid().ToString("N"));
     }
 
     public async Task<bool> RunAsync(TestScript script)
@@ -47,10 +49,10 @@ public class TestRunner
             {
                 result = step.StepType switch
                 {
-                    "tool"       => await RunToolStepAsync(step),
-                    "say"        => await RunSayStepAsync(step),
+                    "tool" => await RunToolStepAsync(step),
+                    "say" => await RunSayStepAsync(step),
                     "playwright" => RunPlaywrightStep(step),
-                    _            => throw new InvalidOperationException(
+                    _ => throw new InvalidOperationException(
                                         "Step must have 'tool', 'say', or 'playwright' key.")
                 };
 

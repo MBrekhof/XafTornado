@@ -4,7 +4,8 @@ namespace XafTornado.Module.Services
 {
     /// <summary>
     /// Tracks the currently active XAF view so AI tools can be context-aware.
-    /// Singleton service — updated by <see cref="ActiveViewTrackingController"/>.
+    /// Scoped (one per Blazor circuit, one per WinForms process) — updated by
+    /// <see cref="ActiveViewTrackingController"/> (SEC-003).
     /// </summary>
     public sealed class ActiveViewContext
     {
@@ -48,6 +49,9 @@ namespace XafTornado.Module.Services
             CurrentObjectDisplay = objectDisplay;
             OnViewChanged?.Invoke();
         }
+
+        /// <summary>Forget the view: WinForms logoff, where the scope outlives the user.</summary>
+        public void Clear() => Update(null, false, null, null, null);
 
         public void ClearFrame(Frame frame)
         {

@@ -21,7 +21,7 @@ layer** — schema discovery, filter parsing, create/update mapping, navigation 
 - **Layer 3 asserts on behaviour, not text.** "`query_entity` was called with `entityName=Customer`"
   is a valid assertion; `contains: "Germany"` on the model's answer is not (model wording drifts,
   assertions rot).
-- **`TestApiController` is Development-only.** It is an unauthenticated, non-secured write endpoint.
+- **`TestApiController` is Development-only.** It is an unauthenticated endpoint that signs Admin in for every request.
 - **Real Postgres over in-memory** for layer 1: Npgsql filter translation is the thing most likely to
   break, and the container already exists.
 - **No CI until there is a suite worth running.** Exit codes are already 0/1; a workflow is one file

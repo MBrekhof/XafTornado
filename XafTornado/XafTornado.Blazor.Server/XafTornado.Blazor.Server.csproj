@@ -24,7 +24,7 @@
     <PackageReference Include="DevExpress.ExpressApp.ReportsV2.Blazor" Version="26.1.5" />
     <PackageReference Include="DevExpress.ExpressApp.Validation.Blazor" Version="26.1.5" />
     <PackageReference Include="DevExpress.AIIntegration.Blazor.Chat" Version="26.1.5" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.*" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\XafTornado.Module\XafTornado.Module.csproj" />
