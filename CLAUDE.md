@@ -67,7 +67,7 @@ The integration chain flows:
 
 - **Non-Persistent Business Objects**: `AIChat` is a `DomainComponent` (not stored in DB) — it exists only to host the chat ViewItem in XAF's navigation.
 - **ScopedObjectSpace pattern**: Tool methods in `AIToolsProvider` create a DI scope + non-secured ObjectSpace per call, disposed after use. This is required because tools run outside the normal XAF request lifecycle.
-- **Model switching at runtime**: `SelectAIModelController` lets users switch AI models (claude-sonnet-4-6, gpt-4o, gemini-2.5-pro, etc.) via a `SingleChoiceAction` that sets `AIChatService.CurrentModel` and clears conversation history.
+- **Model switching at runtime**: `SelectAIModelController` lets users switch AI models (claude-fable-5-1, claude-sonnet-4-6, gpt-6-astra, gemini-2.5-pro, etc.) via a `SingleChoiceAction` that sets `AIChatService.CurrentModel` and clears conversation history.
 - **Navigation queue pattern**: `BlazorNavigationService` enqueues navigation/filter/save/close requests; `NavigationExecutorController` dequeues and executes them on the XAF UI thread.
 - **Two-tier schema discovery**: System prompt contains only entity names + descriptions. Full property/relationship details loaded on-demand via `describe_entity` tool.
 - **XAF Model Differences**: `Model.DesignedDiffs.xafml` (embedded in Module) and `Model.xafml` (copied to output in UI projects) configure XAF views, navigation, and layout.

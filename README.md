@@ -15,7 +15,7 @@ Integrating [LLMTornado](https://github.com/lofcz/LlmTornado) into a DevExpress 
 - **Two-Tier Discovery** — Lightweight system prompt (entity names only) with on-demand `describe_entity` tool for detail loading, minimizing per-message token cost.
 - **Dual Platform** — Full support for both Blazor Server and WinForms using DevExpress AI chat controls (`DxAIChat` and `AIChatControl`), backed by the same shared module.
 - **Markdown Rendering** — AI responses rendered as formatted HTML with table, code block, and list support via Markdig + HtmlSanitizer.
-- **Runtime Model Switching** — Switch between AI models (Claude Sonnet 4.6, GPT-4o, Gemini 2.5 Pro, etc.) at runtime via a toolbar action.
+- **Runtime Model Switching** — Switch between AI models (Claude Fable 5.1, Claude Sonnet 4.6, GPT-6 Astra, Gemini 2.5 Pro, etc.) at runtime via a toolbar action.
 - **Tested at three levels** — 24 tool-level xUnit tests on real PostgreSQL, a Playwright smoke test, and trace-based LLM evals that assert on which tools the model called. See [Testing](#testing).
 
 ## Architecture
@@ -187,8 +187,8 @@ Selectable at runtime via the model switcher toolbar action:
 
 | Provider | Models |
 |----------|--------|
-| Anthropic | Claude Sonnet 4.6, Claude Sonnet 4.5, Claude Opus 4.6 |
-| OpenAI | GPT-4o, GPT-4o Mini, GPT-4.1, GPT-4.1 Mini, o3-mini, o4-mini |
+| Anthropic | Claude Fable 5.1, Claude Opus 5, Claude Sonnet 5, Claude Sonnet 4.6 (default), Claude Opus 4.8 |
+| OpenAI | GPT-6 Astra, GPT-5.5, GPT-5 Mini |
 | Google | Gemini 2.5 Pro, Gemini 2.5 Flash |
 | Mistral | Mistral Large |
 
