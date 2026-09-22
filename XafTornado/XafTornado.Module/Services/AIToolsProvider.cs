@@ -198,8 +198,9 @@ namespace XafTornado.Module.Services
         }
 
         // -- Permissions ------------------------------------------------------------
-        // A secured object space filters reads silently and drops unauthorised writes silently
-        // (dxdocs: 2-Tier Security, Integrated Mode), so a tool must ask first to answer truthfully.
+        // A secured object space filters reads silently (a denied row is absent, a denied member
+        // reads as its default value) and rejects unauthorised writes on its own terms, so a tool
+        // asks first and answers "permission denied" in one shape the model can act on.
 
         private IRequestSecurityStrategy Security =>
             (Application?.Security ?? _serviceProvider.GetService<ISecurityStrategyBase>()) as IRequestSecurityStrategy;
@@ -341,6 +342,8 @@ namespace XafTornado.Module.Services
         /// </summary>
         private (object Match, string Error) FindReference(IObjectSpace os, RelationshipInfo relInfo, string value)
         {
+            if (!CanRead(relInfo.TargetClrType, os))
+                return (null, PermissionDenied(relInfo.TargetEntity, "read"));   // not "not found": the user cannot see the targets
             var (matched, candidates) = FindRecord(os, relInfo.TargetClrType, value);
             if (matched != null) return (matched, null);
             if (candidates.Count > 1)
@@ -706,18 +709,24 @@ namespace XafTornado.Module.Services
                 object record = null;
                 if (!isList && _activeViewContext.CurrentObjectDisplay != null)
                 {
+                    // The view context caches the record's id and display text from when the view
+                    // opened; re-read through the secured space so a revoked permission or a row
+                    // the user may no longer see is not echoed back from the cache.
                     Dictionary<string, object> fields = null;
+                    var visible = false;
                     if (entityInfo != null && _activeViewContext.CurrentObjectKey != null)
                     {
                         try
                         {
                             using var sos = GetObjectSpace(entityInfo.ClrType);
-                            if (CanRead(entityInfo.ClrType, sos.Os))
+                            if (!CanRead(entityInfo.ClrType, sos.Os)) return PermissionDenied(entityInfo.Name, "read");
+                            var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityInfo.ClrType);
+                            var key = ConvertValue(_activeViewContext.CurrentObjectKey, typeInfo.KeyMember.MemberType);
+                            var obj = sos.Os.GetObjectByKey(entityInfo.ClrType, key);
+                            if (obj != null)
                             {
-                                var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityInfo.ClrType);
-                                var key = ConvertValue(_activeViewContext.CurrentObjectKey, typeInfo.KeyMember.MemberType);
-                                var obj = sos.Os.GetObjectByKey(entityInfo.ClrType, key);
-                                if (obj != null) fields = ToRecord(obj, entityInfo, typeInfo, sos.Os);
+                                visible = true;
+                                fields = ToRecord(obj, entityInfo, typeInfo, sos.Os);
                             }
                         }
                         catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException)
@@ -725,12 +734,9 @@ namespace XafTornado.Module.Services
                             // The key in the view context is not this type's key: fields stay null.
                         }
                     }
-                    record = new
-                    {
-                        id = _activeViewContext.CurrentObjectKey,
-                        display = _activeViewContext.CurrentObjectDisplay,
-                        fields,
-                    };
+                    record = visible
+                        ? new { id = _activeViewContext.CurrentObjectKey, display = _activeViewContext.CurrentObjectDisplay, fields }
+                        : new { id = (string)null, display = (string)null, fields, note = "The current record is not readable for this user." };
                 }
 
                 return Json(new

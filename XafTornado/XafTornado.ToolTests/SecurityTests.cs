@@ -73,6 +73,28 @@ public class SecurityTests(AppFixture app)
     }
 
     [Fact]
+    public async Task ReferenceToAnUnreadableType_IsDenied_NotNotFound()
+    {
+        // orders may create Orders and read Customers; Employee is explicitly denied: the reference
+        // lookup must say "permission denied" for Employee, not "Nancy not found". (A type with no
+        // permission at all gets XAF's implicit read for referenced objects, so CanRead is true and
+        // the hidden rows read as "not found"; that is the secured space's own answer.)
+        var before = (await app.Invoke("query_entity", new { entityName = "Order", top = 1000 }))["count"]!.GetValue<int>();
+
+        var r = await app.InvokeAs(AppFixture.Orders, "create_entity", new { entityName = "Order", properties = "Customer=Alfreds;Employee=Nancy;OrderDate=2026-09-22" });
+        Assert.Equal("permission denied", r["error"]!.GetValue<string>());
+        Assert.Equal("Employee", r["entity"]!.GetValue<string>());
+        Assert.Equal("read", r["operation"]!.GetValue<string>());
+
+        var after = (await app.Invoke("query_entity", new { entityName = "Order", top = 1000 }))["count"]!.GetValue<int>();
+        Assert.Equal(before, after);
+
+        // The same user may set a readable reference: the tool works, it is not the user that is broken.
+        var ok = await app.InvokeAs(AppFixture.Orders, "create_entity", new { entityName = "Order", properties = "Customer=Alfreds;OrderDate=2026-09-22" });
+        Assert.True(ok["created"]!.GetValue<bool>());
+    }
+
+    [Fact]
     public async Task Admin_IsUnchanged()
     {
         var r = await app.Invoke("query_entity", new { entityName = "Customer", top = 1000 });

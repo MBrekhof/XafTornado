@@ -42,7 +42,7 @@ namespace XafTornado.Blazor.Server.Controllers
     [ApiController]
     [Route("api/test")]
     [LoopbackOnly]
-    public class TestApiController : ControllerBase, IDisposable
+    public class TestApiController : ControllerBase
     {
         // AIChatService is scoped and an MVC request scope has no circuit, so each request gets a
         // fresh conversation. The runner needs continuity across "say" steps: keep the history
@@ -55,15 +55,13 @@ namespace XafTornado.Blazor.Server.Controllers
 
         private string SessionKey => Request.Headers["X-Test-Session"].FirstOrDefault() ?? "default";
 
-        private readonly IDisposable _signIn;
-
         public TestApiController(AIToolsProvider toolsProvider, AIChatService chatService, NavigationRequestQueue navigation, IServiceProvider services)
         {
             _toolsProvider = toolsProvider;
             _chatService = chatService;
             // Tools read through the scope's secured object space (SEC-001): a request scope has no
             // user, so log Admin on here, the way the evals always ran.
-            _signIn = SignIn(services, "Admin");
+            SignIn(services, "Admin");
             // A request scope has no window to execute UI requests: acknowledge them so the evals
             // can assert on the tool trace (the YAML runner checks which tools were called, not the UI).
             navigation.OnRequest += () =>
@@ -156,19 +154,18 @@ namespace XafTornado.Blazor.Server.Controllers
 
         /// <summary>
         /// Logs <paramref name="userName"/> on in <paramref name="scope"/> (dxdocs "User Logon and
-        /// Authentication", the nested-scope impersonation pattern). Returns the object space the
-        /// user was loaded from; keep it alive while the scope's security is in use.
+        /// Authentication", the nested-scope impersonation pattern). The lookup space can go once
+        /// SignIn returned: the scope's security keeps its own logon space.
         /// </summary>
-        public static IDisposable SignIn(IServiceProvider scope, string userName)
+        public static void SignIn(IServiceProvider scope, string userName)
         {
-            var os = scope.GetRequiredService<INonSecuredObjectSpaceFactory>().CreateNonSecuredObjectSpace<ApplicationUser>();
+            using var os = scope.GetRequiredService<INonSecuredObjectSpaceFactory>().CreateNonSecuredObjectSpace<ApplicationUser>();
             var user = scope.GetRequiredService<UserManager>().FindUserByName<ApplicationUser>(os, userName)
                 ?? throw new InvalidOperationException($"No user '{userName}'.");
-            scope.GetRequiredService<SignInManager>().SignIn(user);
-            return os;
+            var result = scope.GetRequiredService<SignInManager>().SignIn(user);
+            if (!result.Succeeded)
+                throw new InvalidOperationException($"Sign-in as '{userName}' failed: {result.Error?.Message}");
         }
-
-        public void Dispose() => _signIn?.Dispose();
 
         public record ToolRequest(string Tool, Dictionary<string, JsonElement> Params);
         public record ToolResponse(string Result);

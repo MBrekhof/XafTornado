@@ -142,7 +142,12 @@ built. Headless logon: `TestApiController.SignIn(scope, user)` = `UserManager.Fi
 non-secured space + `SignInManager.SignIn` (dxdocs "User Logon and Authentication"); the test API
 signs Admin in per request, `AppFixture` keeps one signed-in scope per user and creates the
 `reader`, `germany` (row-restricted) and `nophone` (member-restricted) users with their roles for
-`SecurityTests`. Catch-alls narrowed to conversion exceptions (2.6).
+`SecurityTests`. Catch-alls narrowed to conversion exceptions (2.6). Codex review: a reference
+target the user is explicitly denied is "permission denied" rather than "not found" (a target
+with no permission at all gets XAF's implicit read for referenced objects, so `CanRead` is true
+and the hidden rows answer "not found"); `get_active_view`
+re-reads the current record through the secured space and never echoes the cached id/display
+of a row the user may no longer see; `SignIn` checks `AuthenticationResult.Succeeded`.
 
 ### Step 3: per-scope log (SEC-004), rides on Step 1
 

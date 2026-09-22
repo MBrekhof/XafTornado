@@ -36,7 +36,7 @@ public sealed class AppFixture : IDisposable
     private const string DbName = "xaftornado_test";
 
     private readonly WebApplicationFactory<Program> _factory;
-    private readonly Dictionary<string, (IServiceScope Scope, IDisposable SignIn, IReadOnlyList<AIFunction> Tools)> _userScopes = new();
+    private readonly Dictionary<string, (IServiceScope Scope, IReadOnlyList<AIFunction> Tools)> _userScopes = new();
 
     /// <summary>Admin's tools (the retained Admin scope).</summary>
     public IReadOnlyList<AIFunction> Tools { get; }
@@ -56,8 +56,9 @@ public sealed class AppFixture : IDisposable
     //   reader   - Reader role:   read Customer, nothing else
     //   germany  - Germany role:  read Customer rows where Country = 'Germany'
     //   nophone  - NoPhone role:  read Customer, but not the Phone member
+    //   orders   - Orders role:   full access to Order, read Customer, Employee explicitly denied
     // "User" (seeded Default role) can read nothing; "Admin" everything.
-    public const string Reader = "reader", Germany = "germany", NoPhone = "nophone";
+    public const string Reader = "reader", Germany = "germany", NoPhone = "nophone", Orders = "orders";
 
     public AppFixture()
     {
@@ -88,12 +89,12 @@ public sealed class AppFixture : IDisposable
     {
         if (_userScopes.TryGetValue(userName, out var existing)) return existing.Tools;
         var scope = _factory.Services.CreateScope();
-        var signIn = TestApiController.SignIn(scope.ServiceProvider, userName);
+        TestApiController.SignIn(scope.ServiceProvider, userName);
         var security = scope.ServiceProvider.GetRequiredService<ISecurityStrategyBase>();
         if ((security.User as ISecurityUser)?.UserName != userName)
             throw new InvalidOperationException($"Scope is not logged on as {userName}.");
         var tools = scope.ServiceProvider.GetRequiredService<AIToolsProvider>().Tools;
-        _userScopes[userName] = (scope, signIn, tools);
+        _userScopes[userName] = (scope, tools);
         return tools;
     }
 
@@ -148,9 +149,19 @@ public sealed class AppFixture : IDisposable
         noPhone.AddTypePermissionsRecursively<Customer>(SecurityOperations.Read, SecurityPermissionState.Allow);
         noPhone.AddMemberPermission<Customer>(SecurityOperations.Read, nameof(Customer.Phone), null, SecurityPermissionState.Deny);
 
+        var orders = os.CreateObject<PermissionPolicyRole>();
+        orders.Name = "Orders";
+        orders.AddTypePermissionsRecursively<Order>(SecurityOperations.CRUDAccess, SecurityPermissionState.Allow);
+        orders.AddTypePermissionsRecursively<Customer>(SecurityOperations.Read, SecurityPermissionState.Allow);
+        // Explicit deny: with no Employee permission at all, XAF's implicit read for referenced
+        // objects (ReferenceWithoutAssociationPermissionsMode) makes CanRead(Employee) true while
+        // the rows stay hidden, and the tool truthfully answers "not found" instead.
+        orders.AddTypePermissionsRecursively<Employee>(SecurityOperations.Read, SecurityPermissionState.Deny);
+
         users.CreateUser<ApplicationUser>(os, Reader, "", u => u.Roles.Add(reader));
         users.CreateUser<ApplicationUser>(os, Germany, "", u => u.Roles.Add(germany));
         users.CreateUser<ApplicationUser>(os, NoPhone, "", u => u.Roles.Add(noPhone));
+        users.CreateUser<ApplicationUser>(os, Orders, "", u => u.Roles.Add(orders));
         os.CommitChanges();
     }
 
@@ -165,11 +176,8 @@ public sealed class AppFixture : IDisposable
 
     public void Dispose()
     {
-        foreach (var (scope, signIn, _) in _userScopes.Values)
-        {
-            signIn.Dispose();
+        foreach (var (scope, _) in _userScopes.Values)
             scope.Dispose();
-        }
         _factory.Dispose();
     }
 }
