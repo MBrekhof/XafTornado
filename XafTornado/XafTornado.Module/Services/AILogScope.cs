@@ -24,19 +24,21 @@ namespace XafTornado.Module.Services
         public int Generation { get; private set; }
 
         /// <summary>Adds unless the scope was cleared since <paramref name="generation"/> was read.</summary>
-        public void Add(int generation, LogLevel level, string category, string message)
-        {
-            lock (_lock)
-            {
-                if (generation != Generation) return;   // written for a conversation that is gone (WinForms logoff)
-            }
-            Add(level, category, message);
-        }
+        public void Add(int generation, LogLevel level, string category, string message) =>
+            AddCore(new AILogEntry(DateTime.Now, level, category, message), generation);
 
-        public void Add(AILogEntry entry)
+        public void Add(AILogEntry entry) => AddCore(entry, null);
+
+        public void Add(LogLevel level, string category, string message) =>
+            Add(new AILogEntry(DateTime.Now, level, category, message));
+
+        private void AddCore(AILogEntry entry, int? generation)
         {
             lock (_lock)
             {
+                // Check and insert under one lock: a Clear() between them would let an entry written
+                // for a discarded conversation (WinForms logoff) land in the next one.
+                if (generation != null && generation != Generation) return;
                 _entries.AddLast(entry);
                 while (_entries.Count > MaxEntries)
                     _entries.RemoveFirst();
@@ -44,9 +46,6 @@ namespace XafTornado.Module.Services
 
             OnNewEntry?.Invoke(entry);
         }
-
-        public void Add(LogLevel level, string category, string message) =>
-            Add(new AILogEntry(DateTime.Now, level, category, message));
 
         public List<AILogEntry> GetEntries()
         {
