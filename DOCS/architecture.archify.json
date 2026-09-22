@@ -1,0 +1,309 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "XafTornado: AI assistant inside a DevExpress XAF app",
+    "output": "architecture.html",
+    "quality_profile": "showcase",
+    "views": [
+      {
+        "id": "chat-turn",
+        "label": "One chat turn",
+        "focus": [
+          "user",
+          "chat",
+          "chatsvc",
+          "llm",
+          "tools"
+        ],
+        "note": "A prompt goes to the LLM with the tool schemas; the model's tool calls run inside the user's scope."
+      },
+      {
+        "id": "data-path",
+        "label": "Data path",
+        "focus": [
+          "tools",
+          "objectspace",
+          "db"
+        ],
+        "note": "Every read and write goes through the calling user's secured ObjectSpace."
+      },
+      {
+        "id": "ui-path",
+        "label": "Driving the UI",
+        "focus": [
+          "tools",
+          "queue",
+          "views"
+        ],
+        "note": "Navigate, filter, save and close run on the UI thread and report what actually happened."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "User",
+      "sublabel": "browser or desktop",
+      "pos": [
+        40,
+        290
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "chat",
+      "type": "frontend",
+      "label": "AI chat panel",
+      "sublabel": "DxAIChat / AIChatControl",
+      "pos": [
+        250,
+        290
+      ],
+      "size": [
+        160,
+        60
+      ]
+    },
+    {
+      "id": "chatsvc",
+      "type": "backend",
+      "label": "AIChatService",
+      "sublabel": "conversation + tool loop",
+      "pos": [
+        500,
+        290
+      ],
+      "size": [
+        160,
+        60
+      ],
+      "tag": "scoped per user"
+    },
+    {
+      "id": "llm",
+      "type": "external",
+      "label": "LLM provider",
+      "sublabel": "Anthropic / OpenAI / Google",
+      "pos": [
+        500,
+        80
+      ],
+      "size": [
+        160,
+        60
+      ],
+      "tag": "via LlmTornado"
+    },
+    {
+      "id": "tools",
+      "type": "backend",
+      "label": "AIToolsProvider",
+      "sublabel": "12 tools, on the UI thread",
+      "pos": [
+        760,
+        290
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "objectspace",
+      "type": "security",
+      "label": "Secured ObjectSpace",
+      "sublabel": "the user's XAF permissions",
+      "pos": [
+        1030,
+        290
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "tag": "CanRead / CanCreate / CanWrite"
+    },
+    {
+      "id": "db",
+      "type": "database",
+      "label": "PostgreSQL",
+      "sublabel": "EF Core 10",
+      "pos": [
+        1030,
+        80
+      ],
+      "size": [
+        130,
+        60
+      ]
+    },
+    {
+      "id": "queue",
+      "type": "messagebus",
+      "label": "NavigationRequestQueue",
+      "sublabel": "UiRequestExecutor",
+      "pos": [
+        760,
+        500
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "views",
+      "type": "frontend",
+      "label": "XAF views",
+      "sublabel": "list and detail views",
+      "pos": [
+        1030,
+        500
+      ],
+      "size": [
+        170,
+        60
+      ]
+    },
+    {
+      "id": "log",
+      "type": "backend",
+      "label": "AILogScope",
+      "sublabel": "this user's trace",
+      "pos": [
+        500,
+        500
+      ],
+      "size": [
+        160,
+        60
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Per-user scope: one Blazor circuit or one WinForms application",
+      "wraps": [
+        "chat",
+        "chatsvc",
+        "tools",
+        "objectspace",
+        "queue",
+        "views",
+        "log"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "prompt",
+      "from": "user",
+      "to": "chat",
+      "label": "prompt",
+      "variant": "emphasis"
+    },
+    {
+      "id": "chat-client",
+      "from": "chat",
+      "to": "chatsvc",
+      "label": "IChatClient"
+    },
+    {
+      "id": "to-llm",
+      "from": "chatsvc",
+      "to": "llm",
+      "label": "messages + tool schemas",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDy": -40
+    },
+    {
+      "id": "tool-calls",
+      "from": "chatsvc",
+      "to": "tools",
+      "label": "tool calls"
+    },
+    {
+      "id": "data-tools",
+      "from": "tools",
+      "to": "objectspace",
+      "label": "query / create / update",
+      "labelDy": -24
+    },
+    {
+      "id": "sql",
+      "from": "objectspace",
+      "to": "db",
+      "label": "EF Core",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDy": -40
+    },
+    {
+      "id": "ui-tools",
+      "from": "tools",
+      "to": "queue",
+      "label": "navigate / filter / save / close",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 40
+    },
+    {
+      "id": "execute",
+      "from": "queue",
+      "to": "views",
+      "label": "on the UI thread, reports the outcome",
+      "labelDy": 54
+    },
+    {
+      "id": "trace",
+      "from": "chatsvc",
+      "to": "log",
+      "label": "turns and tool calls",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDy": 40
+    },
+    {
+      "id": "log-panel",
+      "from": "log",
+      "to": "chat",
+      "label": "AI log panel",
+      "variant": "dashed",
+      "fromSide": "left",
+      "toSide": "bottom"
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Per user, not per process",
+      "items": [
+        "Chat, tools, view context, navigation queue and log: one per Blazor circuit or WinForms app",
+        "Only the TornadoApi (provider keys) is shared"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Security boundary",
+      "items": [
+        "Tools read and write through the user's secured ObjectSpace",
+        "Permissions are checked first; a refusal comes back as { error: \"permission denied\" }"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Truthful tools",
+      "items": [
+        "Every tool returns one JSON object; errors say why",
+        "UI requests execute inline and report ok only when the window did it"
+      ]
+    }
+  ]
+}
