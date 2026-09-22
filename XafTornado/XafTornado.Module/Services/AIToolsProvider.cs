@@ -713,7 +713,8 @@ namespace XafTornado.Module.Services
                     // opened; re-read through the secured space so a revoked permission or a row
                     // the user may no longer see is not echoed back from the cache.
                     Dictionary<string, object> fields = null;
-                    var visible = false;
+                    object id = null;
+                    string display = null;
                     if (entityInfo != null && _activeViewContext.CurrentObjectKey != null)
                     {
                         try
@@ -725,7 +726,10 @@ namespace XafTornado.Module.Services
                             var obj = sos.Os.GetObjectByKey(entityInfo.ClrType, key);
                             if (obj != null)
                             {
-                                visible = true;
+                                // Everything from the secured object, nothing from the cache: a member
+                                // denied since the view opened reads as its default here too.
+                                id = KeyOf(obj, typeInfo);
+                                display = GetObjectDisplayText(obj);
                                 fields = ToRecord(obj, entityInfo, typeInfo, sos.Os);
                             }
                         }
@@ -734,9 +738,9 @@ namespace XafTornado.Module.Services
                             // The key in the view context is not this type's key: fields stay null.
                         }
                     }
-                    record = visible
-                        ? new { id = _activeViewContext.CurrentObjectKey, display = _activeViewContext.CurrentObjectDisplay, fields }
-                        : new { id = (string)null, display = (string)null, fields, note = "The current record is not readable for this user." };
+                    record = id != null
+                        ? new { id, display, fields, note = (string)null }
+                        : new { id, display, fields, note = "The current record is not readable for this user." };
                 }
 
                 return Json(new
