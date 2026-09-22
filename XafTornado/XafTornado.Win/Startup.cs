@@ -38,8 +38,9 @@ namespace XafTornado.Win
             // Enable DevExpress AI infrastructure (required by AIChatControl).
             builder.Services.AddDevExpressAI();
             // Register WinForms navigation service so AI tools can navigate/filter/toggle the side panel.
-            builder.Services.AddSingleton<WinNavigationService>();
-            builder.Services.AddSingleton<INavigationService>(sp => sp.GetRequiredService<WinNavigationService>());
+            // Scoped like the Blazor one; WinForms has a single application scope, so it is one instance.
+            builder.Services.AddScoped<WinNavigationService>();
+            builder.Services.AddScoped<INavigationService>(sp => sp.GetRequiredService<WinNavigationService>());
 
             // Register 3rd-party IoC containers (like Autofac, Dryloc, etc.)
             // builder.UseServiceProviderFactory(new DryIocServiceProviderFactory());
@@ -100,26 +101,14 @@ namespace XafTornado.Win
             {
                 application.ConnectionString = connectionString;
 #if DEBUG
-                if(System.Diagnostics.Debugger.IsAttached && application.CheckCompatibilityType == CheckCompatibilityType.DatabaseSchema) {
+                if (System.Diagnostics.Debugger.IsAttached && application.CheckCompatibilityType == CheckCompatibilityType.DatabaseSchema)
+                {
                     application.DatabaseUpdateMode = DatabaseUpdateMode.UpdateDatabaseAlways;
                 }
 #endif
             });
-            var winApplication = builder.Build();
-
-            // Wire AI tools and register with DevExpress desktop AI container.
-            try
-            {
-                var service = winApplication.ServiceProvider.GetRequiredService<AIChatService>();
-                var chatClient = new AIChatClient(service);
-                AIExtensionsContainerDesktop.Default.RegisterChatClient(chatClient);
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"AI tools not available: {ex.Message}");
-            }
-
-            return winApplication;
+            // The chat client is registered after Setup() in Program.cs, where the schema is complete.
+            return builder.Build();
         }
 
         XafApplication IDesignTimeApplicationFactory.Create()

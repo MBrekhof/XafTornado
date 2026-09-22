@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -39,8 +40,16 @@ namespace XafTornado.Blazor.Server.Controllers
     [LoopbackOnly]
     public class TestApiController : ControllerBase
     {
+        // AIChatService is scoped and an MVC request scope has no circuit, so each request gets a
+        // fresh conversation. The runner needs continuity across "say" steps: keep the history
+        // data (nothing else) per X-Test-Session header, replayed into the request's service.
+        // ponytail: load/ask/store is not atomic; the runner sends one request at a time per key.
+        private static readonly ConcurrentDictionary<string, List<AIChatService.ChatMessageEntry>> Sessions = new();
+
         private readonly AIToolsProvider _toolsProvider;
         private readonly AIChatService _chatService;
+
+        private string SessionKey => Request.Headers["X-Test-Session"].FirstOrDefault() ?? "default";
 
         public TestApiController(AIToolsProvider toolsProvider, AIChatService chatService)
         {
@@ -97,7 +106,10 @@ namespace XafTornado.Blazor.Server.Controllers
 
             try
             {
+                if (Sessions.TryGetValue(SessionKey, out var history))
+                    _chatService.LoadHistory(history);
                 var result = await _chatService.AskAsync(request.Prompt);
+                Sessions[SessionKey] = _chatService.History.ToList();
                 var toolCalls = _chatService.LastToolCalls.Select(c => new
                 {
                     name = c.Name,
@@ -119,7 +131,7 @@ namespace XafTornado.Blazor.Server.Controllers
         [HttpPost("clear")]
         public IActionResult ClearHistory()
         {
-            _chatService.ClearHistory();
+            Sessions.TryRemove(SessionKey, out _);
             return Ok(new { cleared = true });
         }
 

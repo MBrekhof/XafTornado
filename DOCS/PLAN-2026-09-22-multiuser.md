@@ -90,6 +90,19 @@ Verification: ToolTests green; a new test that opens two scopes, asks in one, an
 other's `LastToolCalls`/history are empty; smoke test; manual two-browser check (user A filters,
 user B's grid unchanged).
 
+Implemented 2026-09-22 (`feat/scoped-ai-services`), two deviations from the text above:
+
+- 1.1 turn lock: `ClearHistory` (model switch, WinForms logoff) **cancels** the in-flight turn
+  instead of taking the lock. It runs on the UI thread and a turn can last `TimeoutSeconds`; a
+  blocking wait would freeze the UI. A reset bumps a generation counter; a turn that straddles it
+  (waiting for the lock, in flight, or answered but not yet appended) answers "The conversation
+  was reset." and appends nothing (Codex implementation review, findings 3 and 4).
+- 1.4 dispatch: no tool body changed. Every `AIFunction` is wrapped in a `DelegatingAIFunction`
+  whose `InvokeCoreAsync` routes through `AIToolsProvider.Dispatch`
+  (`Func<Func<Task<object>>, Task<object>>`). Blazor sets `blazorApp.InvokeAsync`, WinForms
+  `SynchronizationContext.Send`; tests and the test API leave it null and run inline. The old
+  `UiContext` property is gone: the body already runs on the UI thread when it creates the ObjectSpace.
+
 ### Step 2: secured ObjectSpace (SEC-001), one PR, after Step 1
 
 1. In `AIToolsProvider.GetObjectSpace` (Blazor branch) replace the new-scope +

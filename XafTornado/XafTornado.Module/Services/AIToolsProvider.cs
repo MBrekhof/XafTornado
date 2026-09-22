@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.Globalization;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -31,17 +32,21 @@ namespace XafTornado.Module.Services
         private List<AIFunction> _tools;
 
         /// <summary>
-        /// When set (WinForms), ObjectSpaces are created via <c>Application.CreateObjectSpace</c>
-        /// on the UI thread, bypassing <c>INonSecuredObjectSpaceFactory</c> which doesn't work
-        /// from manually-created DI scopes in WinForms.
-        /// Blazor does not need this because <c>AsyncLocal</c> carries the context automatically.
+        /// When set (WinForms), ObjectSpaces are created via <c>Application.CreateObjectSpace</c>,
+        /// bypassing <c>INonSecuredObjectSpaceFactory</c> which doesn't work from manually-created
+        /// DI scopes in WinForms. Requires <see cref="Dispatch"/> so the call lands on the UI thread.
         /// </summary>
         public XafApplication Application { get; set; }
 
         /// <summary>
-        /// The WinForms UI <see cref="SynchronizationContext"/> for dispatching ObjectSpace creation.
+        /// Runs a whole tool body (ObjectSpace, query or mutation, projection, dispose) where the
+        /// platform wants XAF work: the circuit's synchronization context in Blazor
+        /// (<c>BlazorApplication.InvokeAsync</c>), the UI thread in WinForms. Set by the platform's
+        /// executor on activation; null runs the body inline (tests, the Debug test API).
+        /// Tool calls arrive on the LLM client's continuation, so without this they would run on
+        /// a thread-pool thread against the circuit's scoped services.
         /// </summary>
-        public SynchronizationContext UiContext { get; set; }
+        public Func<Func<Task<object>>, Task<object>> Dispatch { get; set; }
 
         public AIToolsProvider(IServiceProvider serviceProvider, SchemaDiscoveryService schemaService,
             INavigationService navigationService = null, ActiveViewContext activeViewContext = null)
@@ -59,29 +64,64 @@ namespace XafTornado.Module.Services
         {
             var tools = new List<AIFunction>
             {
-                AIFunctionFactory.Create(ListEntities, "list_entities"),
-                AIFunctionFactory.Create(DescribeEntity, "describe_entity"),
-                AIFunctionFactory.Create(QueryEntity, "query_entity"),
-                AIFunctionFactory.Create(CreateEntity, "create_entity"),
+                Tool(ListEntities, "list_entities"),
+                Tool(DescribeEntity, "describe_entity"),
+                Tool(QueryEntity, "query_entity"),
+                Tool(CreateEntity, "create_entity"),
             };
 
             if (_navigationService != null)
             {
-                tools.Add(AIFunctionFactory.Create(NavigateToList, "navigate_to_list"));
-                tools.Add(AIFunctionFactory.Create(NavigateToDetail, "navigate_to_detail"));
-                tools.Add(AIFunctionFactory.Create(FilterActiveList, "filter_active_list"));
-                tools.Add(AIFunctionFactory.Create(ClearActiveListFilter, "clear_active_list_filter"));
-                tools.Add(AIFunctionFactory.Create(SaveActiveView, "save_active_view"));
-                tools.Add(AIFunctionFactory.Create(CloseActiveView, "close_active_view"));
+                tools.Add(Tool(NavigateToList, "navigate_to_list"));
+                tools.Add(Tool(NavigateToDetail, "navigate_to_detail"));
+                tools.Add(Tool(FilterActiveList, "filter_active_list"));
+                tools.Add(Tool(ClearActiveListFilter, "clear_active_list_filter"));
+                tools.Add(Tool(SaveActiveView, "save_active_view"));
+                tools.Add(Tool(CloseActiveView, "close_active_view"));
             }
 
             if (_activeViewContext != null)
             {
-                tools.Add(AIFunctionFactory.Create(GetActiveView, "get_active_view"));
-                tools.Add(AIFunctionFactory.Create(UpdateEntity, "update_entity"));
+                tools.Add(Tool(GetActiveView, "get_active_view"));
+                tools.Add(Tool(UpdateEntity, "update_entity"));
             }
 
             return tools;
+        }
+
+        private AIFunction Tool(Delegate method, string name) =>
+            new DispatchedFunction(AIFunctionFactory.Create(method, name), this);
+
+        /// <summary>Routes every invocation through <see cref="Dispatch"/> when one is set.</summary>
+        private sealed class DispatchedFunction(AIFunction inner, AIToolsProvider owner) : DelegatingAIFunction(inner)
+        {
+            protected override async ValueTask<object> InvokeCoreAsync(AIFunctionArguments arguments, CancellationToken cancellationToken)
+            {
+                var dispatch = owner.Dispatch;
+                if (dispatch == null)
+                    return await base.InvokeCoreAsync(arguments, cancellationToken);
+
+                // Nothing may throw across the platform dispatcher: an exception escaping
+                // BlazorApplication.InvokeAsync takes the circuit down (argument binding, e.g.
+                // top="abc", throws before the tool body's own catch). Capture and rethrow here.
+                var outcome = await dispatch(async () =>
+                {
+                    try
+                    {
+                        // Recheck: the turn may have been cancelled or reset (WinForms logoff) while
+                        // this call waited for the UI thread; the body must not run for the next user.
+                        cancellationToken.ThrowIfCancellationRequested();
+                        return await base.InvokeCoreAsync(arguments, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        return ExceptionDispatchInfo.Capture(ex);
+                    }
+                });
+                if (outcome is ExceptionDispatchInfo failure)
+                    failure.Throw();
+                return outcome;
+            }
         }
 
         /// <summary>
@@ -113,27 +153,9 @@ namespace XafTornado.Module.Services
         private ScopedObjectSpace GetObjectSpace(Type entityType)
         {
             // WinForms: INonSecuredObjectSpaceFactory doesn't work from manually-created
-            // DI scopes. Use XafApplication.CreateObjectSpace directly on the UI thread.
+            // DI scopes. Use XafApplication.CreateObjectSpace; Dispatch put us on the UI thread.
             if (Application != null)
-            {
-                IObjectSpace os = null;
-                if (UiContext != null && SynchronizationContext.Current != UiContext)
-                {
-                    Exception caught = null;
-                    UiContext.Send(_ =>
-                    {
-                        try { os = Application.CreateObjectSpace(entityType); }
-                        catch (Exception ex) { caught = ex; }
-                    }, null);
-                    if (caught != null)
-                        throw caught;
-                }
-                else
-                {
-                    os = Application.CreateObjectSpace(entityType);
-                }
-                return new ScopedObjectSpace(os, null);
-            }
+                return new ScopedObjectSpace(Application.CreateObjectSpace(entityType), null);
 
             // Blazor: DI scope + INonSecuredObjectSpaceFactory (AsyncLocal carries context).
             var scope = _serviceProvider.CreateScope();
