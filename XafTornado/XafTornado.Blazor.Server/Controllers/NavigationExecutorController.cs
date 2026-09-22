@@ -89,11 +89,9 @@ namespace XafTornado.Blazor.Server.Controllers
 
         private void Drain()
         {
+            // Nothing between the claim (TryDequeue) and Run: Run always completes the request.
             while (_queue != null && _queue.TryDequeue(out var request))
-            {
-                _logger?.LogInformation("[NavExecutor] {Kind} {Entity} {Key} {Criteria}", request.Kind, request.EntityName, request.KeyValue, request.Criteria);
                 _executor.Run(request);
-            }
         }
     }
 }

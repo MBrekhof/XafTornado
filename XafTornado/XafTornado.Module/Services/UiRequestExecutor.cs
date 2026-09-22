@@ -33,6 +33,7 @@ namespace XafTornado.Module.Services
         {
             try
             {
+                _logger?.LogInformation("[UiExecutor] {Kind} {Entity} {Key} {Criteria}", request.Kind, request.EntityName, request.KeyValue, request.Criteria);
                 request.Outcome = Execute(request);
             }
             finally

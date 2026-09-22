@@ -14,6 +14,8 @@ namespace XafTornado.Module.Services
     public sealed class NavigationRequestQueue : INavigationService
     {
         public const string NotConfirmed = "The application window did not execute the request.";
+        /// <summary>A claimed request the UI thread has not finished within the wait: its outcome is unknown, not a failure.</summary>
+        public const string NotFinished = "The application window has not finished the request yet; check the data before repeating it.";
 
         private readonly ConcurrentQueue<UiRequest> _queue = new();
 
@@ -52,9 +54,10 @@ namespace XafTornado.Module.Services
                 return NavigationResult.Fail(NotConfirmed);
             // An executor claimed it. Inline that means it is already done; off-thread (WinForms
             // BeginInvoke) wait for it: the executor is on the UI thread, this thread is not.
+            // A claimed request that outlives the wait may still complete: say so, never "did not execute".
             return request.WaitDone(10_000) && request.Outcome != null
                 ? request.Outcome
-                : NavigationResult.Fail(NotConfirmed);
+                : NavigationResult.Fail(NotFinished);
         }
 
         /// <summary>Next request nobody has abandoned; the caller owns it (claimed) and must MarkDone it.</summary>
