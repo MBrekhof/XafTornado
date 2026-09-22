@@ -110,11 +110,17 @@ namespace XafTornado.Module.Services
 
                 if (outcome is ExceptionDispatchInfo failure)
                 {
-                    owner._log?.Add(LogLevel.Error, "Tools", $"{Name}({Args(arguments)}) failed: {failure.SourceException.Message}");
+                    // A cancelled call (turn reset, WinForms logoff) leaves no trace: its arguments
+                    // belong to the conversation that was just discarded.
+                    if (failure.SourceException is not OperationCanceledException)
+                        owner._log?.Add(LogLevel.Error, "Tools", $"{Name}({Args(arguments)}) failed: {failure.SourceException.Message}");
                     failure.Throw();
                 }
 
-                owner._log?.Add(LogLevel.Information, "Tools", $"{Name}({Args(arguments)}) -> {Trim(outcome?.ToString())}");
+                // Tool bodies catch their own exceptions and answer { "error": ... }: that is a warning, not a result.
+                var text = outcome?.ToString();
+                var level = text != null && text.StartsWith("{\"error\"", StringComparison.Ordinal) ? LogLevel.Warning : LogLevel.Information;
+                owner._log?.Add(level, "Tools", $"{Name}({Args(arguments)}) -> {Trim(text)}");
                 return outcome;
             }
 

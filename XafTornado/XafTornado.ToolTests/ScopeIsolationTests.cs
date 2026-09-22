@@ -118,11 +118,23 @@ public class ScopeIsolationTests(AppFixture app)
         Assert.Contains("Alfreds Futterkiste", entry.Message);   // the result is the user's own to see
         Assert.Empty(logB.GetEntries());
 
-        // A failed call is an Error entry, and the exception still reaches the caller.
+        // A tool that answers { "error": ... } (the common failure path: bodies catch their own
+        // exceptions) is a Warning entry; an exception that escapes the body is an Error entry.
+        var unknown = await Invoke(toolsA, "query_entity", new { entityName = "Nope" });
+        Assert.NotNull(unknown["error"]);
+        Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Warning, logA.GetEntries().Last().Level);
+
         var fn = toolsA.Single(t => t.Name == "query_entity");
         await Assert.ThrowsAnyAsync<Exception>(() =>
             fn.InvokeAsync(new AIFunctionArguments(new Dictionary<string, object?> { ["entityName"] = "Order", ["top"] = "abc" })).AsTask());
         Assert.Equal(Microsoft.Extensions.Logging.LogLevel.Error, logA.GetEntries().Last().Level);
+
+        // A cancelled call leaves no trace (its arguments belong to a discarded conversation).
+        var before = logA.GetEntries().Count;
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            Invoke(toolsA, "describe_entity", new { entityName = "Order" }, new CancellationToken(canceled: true)));
+        Assert.Equal(before, logA.GetEntries().Count);
+
         Assert.Empty(logB.GetEntries());
     }
 
@@ -163,12 +175,12 @@ public class ScopeIsolationTests(AppFixture app)
         Assert.False(nav.ConsumeSave());
     }
 
-    private static async Task<System.Text.Json.Nodes.JsonNode> Invoke(IReadOnlyList<AIFunction> tools, string name, object? args = null)
+    private static async Task<System.Text.Json.Nodes.JsonNode> Invoke(IReadOnlyList<AIFunction> tools, string name, object? args = null, CancellationToken ct = default)
     {
         var dict = args == null
             ? new Dictionary<string, object?>()
             : System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, object?>>(System.Text.Json.JsonSerializer.Serialize(args))!;
-        var result = await tools.Single(t => t.Name == name).InvokeAsync(new AIFunctionArguments(dict));
+        var result = await tools.Single(t => t.Name == name).InvokeAsync(new AIFunctionArguments(dict), ct);
         return System.Text.Json.Nodes.JsonNode.Parse(result!.ToString()!)!;
     }
 
