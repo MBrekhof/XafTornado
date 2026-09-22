@@ -305,10 +305,12 @@ namespace XafTornado.Module.Services
         /// <summary>
         /// The library's catalog entry when it knows the id, so endpoint capabilities come along:
         /// gpt-6 rejects function tools on Chat Completions and needs the Responses endpoint,
-        /// which LlmTornado only selects for a catalog model. Unknown ids keep name + provider.
+        /// which LlmTornado only selects for a catalog model. Unknown ids keep name + provider, and
+        /// so do aliases: the map resolves "mistral-large-latest" to a dated snapshot, which would
+        /// pin a "latest" id silently.
         /// </summary>
         private static ChatModel ResolveModel(string modelId, LLmProviders provider) =>
-            ChatModel.AllModelsMap.TryGetValue(modelId, out var known) && known is ChatModel catalog
+            ChatModel.AllModelsMap.TryGetValue(modelId, out var known) && known is ChatModel catalog && catalog.Name == modelId
                 ? catalog
                 : new ChatModel(modelId, provider);
 
