@@ -797,7 +797,7 @@ namespace XafTornado.Module.Services
 
         // -- Save / Close tools --------------------------------------------------------
 
-        [Description("Save (commit) changes in the currently active detail view, after validation. Use this when the user says 'save', 'save this', 'save changes', etc. Returns JSON { ok, error? }: when ok is false nothing was saved and error says why.")]
+        [Description("Save (commit) changes in the currently active detail view, after validation. Use this when the user says 'save', 'save this', 'save changes', etc. Returns JSON { ok, error? }: when ok is false, error says why; a validation or database rejection means nothing was saved, while 'has not finished' means the outcome is unknown and the data must be checked before repeating.")]
         private string SaveActiveView()
         {
             _logger.LogInformation("[Tool:save_active_view] Called");
