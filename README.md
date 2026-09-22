@@ -16,9 +16,14 @@ Integrating [LLMTornado](https://github.com/lofcz/LlmTornado) into a DevExpress 
 - **Dual Platform** — Full support for both Blazor Server and WinForms using DevExpress AI chat controls (`DxAIChat` and `AIChatControl`), backed by the same shared module.
 - **Markdown Rendering** — AI responses rendered as formatted HTML with table, code block, and list support via Markdig + HtmlSanitizer.
 - **Runtime Model Switching** — Switch between AI models (Claude Fable 5.1, Claude Sonnet 4.6, GPT-6 Astra, Gemini 2.5 Pro, etc.) at runtime via a toolbar action.
-- **Tested at three levels** — 24 tool-level xUnit tests on real PostgreSQL, a Playwright smoke test, and trace-based LLM evals that assert on which tools the model called. See [Testing](#testing).
+- **Tested at three levels** — 59 tool-level xUnit tests on real PostgreSQL (including per-user isolation and permission tests), a Playwright smoke test, and trace-based LLM evals that assert on which tools the model called. See [Testing](#testing).
+- **Multi-user safe** — every piece of per-user AI state is scoped to the Blazor circuit (or the WinForms application), tools read and write through the calling user's secured ObjectSpace, and UI tools report what the window actually did. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Architecture
+
+![XafTornado architecture: the AI chat panel talks to a per-user AIChatService, which sends messages and tool schemas to the LLM provider through LlmTornado and runs the model's tool calls through AIToolsProvider; data tools go through the user's secured ObjectSpace to PostgreSQL, UI tools through the NavigationRequestQueue to the XAF views, and every turn is traced into the user's AILogScope](DOCS/architecture.png)
+
+Interactive version with guided views: [DOCS/architecture.html](DOCS/architecture.html) (source: `DOCS/architecture.archify.json`).
 
 ```
 XafTornado.Module/          Platform-agnostic core (business objects, services, controllers)
@@ -281,9 +286,13 @@ Three layers, described in [DOCS/TESTING.md](DOCS/TESTING.md). What gets tested 
 | Smoke (Playwright: login → list view → AI panel → tool call) | `powershell -File scripts/smoke.ps1` | ~30 s | PostgreSQL |
 | LLM evals (prompt → assert on the **tool-call trace**, not the wording) | `dotnet run --project XafTornado/XafTornado.Tests -- tests/llm-evals.yaml` | ~1 min | running app + API key |
 
+## Changelog
+
+**2026-09-22** — Multi-user hardening after a Codex review: per-user AI services, secured ObjectSpace with permission checks, truthful UI tools, per-user log panel; plus Claude 5 in the model picker, LlmTornado 3.8.68, DevExpress 26.1.5 and pinned packages. Details in [CHANGELOG.md](CHANGELOG.md).
+
 ## Roadmap
 
-Phase 1 (attribute-based schema filtering) and Phase 2 (two-tier discovery with `describe_entity`) are complete. Phase 3 — mutation confirmation, security boundary (tools respecting XAF permissions), conversation persistence, richer queries — is specified in [DOCS/PHASE3.md](DOCS/PHASE3.md).
+Phase 1 (attribute-based schema filtering), Phase 2 (two-tier discovery with `describe_entity`) and the Phase 3 security boundary (tools respecting XAF permissions) are complete. The remaining Phase 3 items — mutation confirmation, conversation persistence, richer queries — are specified in [DOCS/PHASE3.md](DOCS/PHASE3.md); the multi-user work is documented in [DOCS/PLAN-2026-09-22-multiuser.md](DOCS/PLAN-2026-09-22-multiuser.md).
 
 ## Tech Stack
 
