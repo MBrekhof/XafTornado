@@ -9,7 +9,6 @@ using DevExpress.Utils;
 using DevExpress.XtraEditors;
 using Microsoft.Extensions.DependencyInjection;
 using XafTornado.Module.Services;
-using XafTornado.Win.Services;
 
 namespace XafTornado.Win.Controllers
 {
@@ -23,7 +22,7 @@ namespace XafTornado.Win.Controllers
         private PanelControl _sidePanel;
         private AIChatControl _chatControl;
         private Splitter _splitter;
-        private WinNavigationService _navService;
+        private NavigationRequestQueue _navService;
 
         public AISidePanelController()
         {
@@ -34,7 +33,7 @@ namespace XafTornado.Win.Controllers
         {
             base.OnActivated();
 
-            _navService = Application.ServiceProvider.GetService<INavigationService>() as WinNavigationService;
+            _navService = Application.ServiceProvider.GetService<INavigationService>() as NavigationRequestQueue;
             if (_navService != null)
             {
                 _navService.OnSidePanelToggleRequested += TogglePanel;

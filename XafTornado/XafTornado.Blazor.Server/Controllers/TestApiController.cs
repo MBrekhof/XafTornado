@@ -51,10 +51,17 @@ namespace XafTornado.Blazor.Server.Controllers
 
         private string SessionKey => Request.Headers["X-Test-Session"].FirstOrDefault() ?? "default";
 
-        public TestApiController(AIToolsProvider toolsProvider, AIChatService chatService)
+        public TestApiController(AIToolsProvider toolsProvider, AIChatService chatService, NavigationRequestQueue navigation)
         {
             _toolsProvider = toolsProvider;
             _chatService = chatService;
+            // A request scope has no window to execute UI requests: acknowledge them so the evals
+            // can assert on the tool trace (the YAML runner checks which tools were called, not the UI).
+            navigation.OnRequest += () =>
+            {
+                while (navigation.TryDequeue(out var request))
+                    request.Outcome = NavigationResult.Success;
+            };
         }
 
         /// <summary>

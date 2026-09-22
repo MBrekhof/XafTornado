@@ -30,11 +30,8 @@ namespace XafTornado.Blazor.Server
             services.AddRazorPages();
             services.AddServerSideBlazor();
             services.AddHttpContextAccessor();
-            services.AddAIServices(Configuration);
+            services.AddAIServices(Configuration);   // includes the per-circuit NavigationRequestQueue (SEC-003)
             services.AddDevExpressAI();
-            // Per circuit: a tool's navigate/filter/save lands on this user's views only (SEC-003).
-            services.AddScoped<BlazorNavigationService>();
-            services.AddScoped<INavigationService>(sp => sp.GetRequiredService<BlazorNavigationService>());
             services.AddScoped<CircuitHandler, CircuitHandlerProxy>();
             services.AddXaf(Configuration, builder =>
             {

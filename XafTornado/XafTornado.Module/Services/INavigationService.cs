@@ -1,33 +1,55 @@
 namespace XafTornado.Module.Services
 {
     /// <summary>
-    /// Platform-agnostic service for navigating the XAF application from AI tools.
-    /// Blazor provides an implementation; WinForms returns null (navigation not supported).
+    /// Platform-agnostic service for driving the XAF UI from AI tools. Every method reports
+    /// whether the UI actually did it (AI-007): the tool relays <see cref="NavigationResult"/>
+    /// to the model instead of guessing.
     /// </summary>
     public interface INavigationService
     {
         /// <summary>Navigate the user to the ListView for the given entity.</summary>
-        void NavigateToListView(string entityName);
+        NavigationResult NavigateToListView(string entityName);
 
         /// <summary>Navigate the user to a specific record's DetailView.</summary>
-        void NavigateToDetailView(string entityName, string keyValue);
+        NavigationResult NavigateToDetailView(string entityName, string keyValue);
+
+        /// <summary>Apply a filter to the active ListView using XAF criteria syntax.</summary>
+        NavigationResult FilterActiveList(string criteriaString);
+
+        /// <summary>Clear the AI-applied filter from the active ListView.</summary>
+        NavigationResult ClearActiveListFilter();
+
+        /// <summary>Refresh the active view's data from the database (after AI creates/updates records).</summary>
+        NavigationResult RefreshActiveView();
+
+        /// <summary>Save (commit) changes in the active detail view, after XAF validation.</summary>
+        NavigationResult SaveActiveView();
+
+        /// <summary>Close the active view and return to the previous one.</summary>
+        NavigationResult CloseActiveView();
 
         /// <summary>Toggle the AI assistant side panel open/closed.</summary>
         void ToggleSidePanel();
+    }
 
-        /// <summary>Apply a filter to the active ListView using XAF criteria syntax.</summary>
-        void FilterActiveList(string criteriaString);
+    /// <summary>What the UI did with a request; <c>Error</c> is for the model, in plain words.</summary>
+    public sealed record NavigationResult(bool Ok, string Error = null)
+    {
+        public static readonly NavigationResult Success = new(true);
+        public static NavigationResult Fail(string error) => new(false, error);
+    }
 
-        /// <summary>Clear the AI-applied filter from the active ListView.</summary>
-        void ClearActiveListFilter();
+    public enum UiRequestKind { NavigateToList, NavigateToDetail, Filter, ClearFilter, Refresh, Save, Close }
 
-        /// <summary>Refresh the active view's data from the database (after AI creates/updates records).</summary>
-        void RefreshActiveView();
-
-        /// <summary>Save (commit) changes in the active detail view.</summary>
-        void SaveActiveView();
-
-        /// <summary>Close the active view and return to the previous one.</summary>
-        void CloseActiveView();
+    /// <summary>One request from a tool to the UI; the executor fills <see cref="Outcome"/>.</summary>
+    public sealed class UiRequest
+    {
+        public UiRequestKind Kind { get; init; }
+        public string EntityName { get; init; }
+        public string KeyValue { get; init; }
+        public string Criteria { get; init; }
+        public NavigationResult Outcome { get; set; }
+        /// <summary>Set when no executor answered inline: a later executor must not run it against another view.</summary>
+        public bool Abandoned { get; set; }
     }
 }

@@ -174,6 +174,21 @@ Verification: tool test with the fake executor set to fail: `save_active_view` r
 `{ ok: false, error }`. Playwright: validation error on a detail view + "save this" -> assistant
 reports the failure.
 
+Implemented 2026-09-22 (`fix/truthful-ui-tools`, on top of Step 3), simpler than the text above
+because Step 1 changed the ground: tool bodies already run on the circuit's synchronization
+context (`AIToolsProvider.Dispatch`), and both `BlazorApplication.InvokeAsync` (Blazor's
+`Dispatcher` runs inline when already on its context) and the WinForms `Control.InvokeRequired`
+check execute the executor **inline** from there. So no `TaskCompletionSource`, timeout or
+captured target view: `INavigationService` methods return `NavigationResult` synchronously, the
+`UiRequest` carries the outcome, and if no executor answered inline the request is abandoned and
+the tool answers `{ ok: false, error: "The application window did not execute the request." }`.
+Both platform services collapsed into `NavigationRequestQueue` (Module) and both executors into
+`UiRequestExecutor` (Module); the controllers only dispatch. `Save` runs the XAF validation rules
+(`IRuleSet.ValidateAllTargets`, dxdocs "Trigger Validation Programmatically") before
+`CommitChanges`, so a broken rule is a reported failure. Headless harnesses: `AppFixture` attaches
+a fake executor that records requests and answers a configurable outcome; the Debug
+`TestApiController` acknowledges requests so the evals keep asserting on the tool trace.
+
 ## 4. Risks and open questions
 
 - **Model switch per user** means `AIOptions.Model` becomes the default only. The picker card

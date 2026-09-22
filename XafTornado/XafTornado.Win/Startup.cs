@@ -15,7 +15,6 @@ using DevExpress.AIIntegration;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using XafTornado.Module.Services;
-using XafTornado.Win.Services;
 
 namespace XafTornado.Win
 {
@@ -38,10 +37,6 @@ namespace XafTornado.Win
             builder.Services.AddAIServices(configuration);
             // Enable DevExpress AI infrastructure (required by AIChatControl).
             builder.Services.AddDevExpressAI();
-            // Register WinForms navigation service so AI tools can navigate/filter/toggle the side panel.
-            // Scoped like the Blazor one; WinForms has a single application scope, so it is one instance.
-            builder.Services.AddScoped<WinNavigationService>();
-            builder.Services.AddScoped<INavigationService>(sp => sp.GetRequiredService<WinNavigationService>());
 
             // Register 3rd-party IoC containers (like Autofac, Dryloc, etc.)
             // builder.UseServiceProviderFactory(new DryIocServiceProviderFactory());
