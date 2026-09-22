@@ -12,7 +12,9 @@ using DevExpress.ExpressApp.Win.Utils;
 using DevExpress.Persistent.Base;
 using DevExpress.Persistent.BaseImpl.EF.PermissionPolicy;
 using DevExpress.XtraEditors;
+using DevExpress.AIIntegration;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using XafTornado.Module.Services;
 
@@ -84,19 +86,7 @@ namespace XafTornado.Win
             {
                 winApplication.Setup();
 
-                // Re-discover schema now that XAF types are fully registered.
-                // BuildApplication() caches an empty schema because it runs before Setup().
-                var schemaService = winApplication.ServiceProvider.GetRequiredService<SchemaDiscoveryService>();
-                schemaService.InvalidateCache();
-                var aiService = winApplication.ServiceProvider.GetRequiredService<AIChatService>();
-                aiService.SystemMessage = schemaService.GenerateSystemPrompt();
-
-                // Give AI tools a reference to the application + UI sync context so they
-                // can create ObjectSpaces on the UI thread (required in WinForms).
-                var toolsProvider = winApplication.ServiceProvider.GetRequiredService<AIToolsProvider>();
-                toolsProvider.Application = winApplication;
-                toolsProvider.UiContext = SynchronizationContext.Current;
-
+                WireAIServices(winApplication);
                 winApplication.Start();
             }
             catch (Exception e)
@@ -105,6 +95,54 @@ namespace XafTornado.Win
                 winApplication.HandleException(e);
             }
             return 0;
+        }
+
+        /// <summary>
+        /// After Setup(): XAF types are registered, so the schema can be discovered, and the one
+        /// application scope exists, so the scoped chat client can be handed to the desktop AI container.
+        /// </summary>
+        private static void WireAIServices(WinApplication winApplication)
+        {
+            var services = winApplication.ServiceProvider;
+
+            // BuildApplication() ran before Setup(), against an empty ITypesInfo.
+            services.GetRequiredService<SchemaDiscoveryService>().InvalidateCache();
+
+            // Tool bodies run on the UI thread: ObjectSpaces come from the application, which is not thread-safe.
+            var toolsProvider = services.GetRequiredService<AIToolsProvider>();
+            toolsProvider.Application = winApplication;
+            var uiContext = SynchronizationContext.Current;
+            if (uiContext != null)
+            {
+                toolsProvider.Dispatch = body =>
+                {
+                    Task<object> result = null;
+                    if (SynchronizationContext.Current == uiContext)
+                        return body();
+                    uiContext.Send(_ => result = body(), null);   // tool bodies are synchronous: already complete
+                    return result;
+                };
+            }
+
+            // The WinForms application and its DI scope outlive logoff/logon (WinApplication.LogOff
+            // re-runs DoLogon in place), so the next user must not inherit this one's conversation,
+            // view context or queued navigation (SEC-002, SEC-003).
+            winApplication.LoggedOff += (_, _) =>
+            {
+                services.GetRequiredService<AIChatService>().Reset();
+                services.GetRequiredService<ActiveViewContext>().Clear();
+                services.GetRequiredService<NavigationRequestQueue>().Clear();
+                services.GetRequiredService<AILogScope>().Clear();
+            };
+
+            try
+            {
+                AIExtensionsContainerDesktop.Default.RegisterChatClient(services.GetRequiredService<IChatClient>());
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"AI chat not available: {ex.Message}");
+            }
         }
     }
 }

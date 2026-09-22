@@ -15,37 +15,43 @@ namespace XafTornado.Module.Services
             ArgumentNullException.ThrowIfNull(configuration);
 
             services.Configure<AIOptions>(configuration.GetSection(AIOptions.SectionName));
+
+            // Process-wide: the schema and the TornadoApi carry no per-user state.
             services.AddSingleton<SchemaDiscoveryService>();
-            // Tools + system prompt are wired here so every consumer (DxAIChat via IChatClient,
-            // TestApiController, WinForms) gets the same configured singleton.
-            services.AddSingleton<AIChatService>(sp =>
-            {
-                var service = new AIChatService(
-                    sp.GetRequiredService<IOptions<AIOptions>>(),
-                    sp.GetRequiredService<ILogger<AIChatService>>());
-                var toolsProvider = sp.GetRequiredService<AIToolsProvider>();
-                service.ToolFunctions = toolsProvider.Tools;
-                service.TornadoTools = toolsProvider.GetTornadoTools();
-                service.SystemMessage = sp.GetRequiredService<SchemaDiscoveryService>().GenerateSystemPrompt();
-                return service;
-            });
-            services.AddSingleton<ActiveViewContext>();
+            services.AddSingleton<TornadoApiProvider>();
 
-            // Log store + logger provider for the AI log viewer panel.
-            services.AddSingleton<AILogStore>();
-            services.AddSingleton<ILoggerProvider, AILoggerProvider>();
-
-            // Register the tools provider (singleton — tools are created lazily on first access).
-            services.AddSingleton<AIToolsProvider>(sp =>
+            // Per user: one instance per Blazor circuit, one per WinForms process (SEC-002, SEC-003).
+            // The tools are bound instance delegates on the scope's provider, so the conversation
+            // that executes them must come from the same scope. The log panel reads the same
+            // scope's trace, so it shows this user's calls only (SEC-004).
+            services.AddScoped<ActiveViewContext>();
+            services.AddScoped<AILogScope>();
+            services.AddScoped<NavigationRequestQueue>();
+            services.AddScoped<INavigationService>(sp => sp.GetRequiredService<NavigationRequestQueue>());
+            services.AddScoped<AIToolsProvider>(sp =>
                 new AIToolsProvider(
                     sp,
                     sp.GetRequiredService<SchemaDiscoveryService>(),
                     sp.GetService<INavigationService>(),
-                    sp.GetService<ActiveViewContext>()));
+                    sp.GetRequiredService<ActiveViewContext>(),
+                    sp.GetRequiredService<AILogScope>()));
+            services.AddScoped<AIChatService>(sp =>
+            {
+                var service = new AIChatService(
+                    sp.GetRequiredService<TornadoApiProvider>(),
+                    sp.GetRequiredService<IOptions<AIOptions>>(),
+                    sp.GetRequiredService<ILogger<AIChatService>>(),
+                    sp.GetRequiredService<AILogScope>());
+                var toolsProvider = sp.GetRequiredService<AIToolsProvider>();
+                service.ToolFunctions = toolsProvider.Tools;
+                service.TornadoTools = toolsProvider.GetTornadoTools();
+                service.SystemPromptFactory = sp.GetRequiredService<SchemaDiscoveryService>().GenerateSystemPrompt;
+                return service;
+            });
 
-            // Register the IChatClient adapter so DevExpress DxAIChat / AIChatControl
-            // can route messages through LLMTornado automatically.
-            services.AddChatClient(sp => new AIChatClient(sp.GetRequiredService<AIChatService>()));
+            // The IChatClient adapter DxAIChat / AIChatControl resolve: scoped, so DevExpress's
+            // per-circuit IChatResponseProvider (AddDevExpressAI) wraps this circuit's conversation.
+            services.AddChatClient(sp => new AIChatClient(sp.GetRequiredService<AIChatService>()), ServiceLifetime.Scoped);
 
             return services;
         }

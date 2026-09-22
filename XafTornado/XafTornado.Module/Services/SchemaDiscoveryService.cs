@@ -54,7 +54,10 @@ namespace XafTornado.Module.Services
         /// </summary>
         public void InvalidateCache()
         {
-            lock (_lock) { _cached = null; }
+            // Reset the opt-in decision too: a discovery that ran against an empty ITypesInfo
+            // (WinForms, before Setup()) decided "no [AIVisible] anywhere" and would otherwise
+            // keep exposing ApplicationUser & co. after the real types arrive (AI-005).
+            lock (_lock) { _cached = null; _useOptInMode = null; }
         }
 
         /// <summary>

@@ -1,10 +1,18 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+using DevExpress.ExpressApp;
+using DevExpress.ExpressApp.Security;
 using Microsoft.Extensions.AI;
+using Microsoft.Extensions.DependencyInjection;
+using XafTornado.Module.BusinessObjects;
 using XafTornado.Module.Services;
 
 namespace XafTornado.Blazor.Server.Controllers
@@ -13,20 +21,57 @@ namespace XafTornado.Blazor.Server.Controllers
     /// Minimal REST API used by the XafTornado.Tests runner to execute AI tools
     /// and natural-language prompts directly against the running application.
     /// Only intended for development/testing — compiled out of Release builds:
-    /// it is unauthenticated and writes through a non-secured ObjectSpace.
+    /// it is unauthenticated and signs Admin in for every request, so it
+    /// only answers callers on the loopback interface (SEC-005).
     /// </summary>
 #if DEBUG
+    /// <summary>
+    /// Rejects callers that are not on the loopback interface. The in-process test host
+    /// (WebApplicationFactory) has no remote address and passes.
+    /// </summary>
+    public sealed class LoopbackOnlyAttribute : ActionFilterAttribute
+    {
+        public override void OnActionExecuting(ActionExecutingContext context)
+        {
+            var ip = context.HttpContext.Connection.RemoteIpAddress;
+            if (ip != null && !IPAddress.IsLoopback(ip))
+                context.Result = new StatusCodeResult(StatusCodes.Status403Forbidden);
+        }
+    }
+
     [ApiController]
     [Route("api/test")]
+    [LoopbackOnly]
     public class TestApiController : ControllerBase
     {
+        // AIChatService is scoped and an MVC request scope has no circuit, so each request gets a
+        // fresh conversation. The runner needs continuity across "say" steps: keep the history
+        // data (nothing else) per X-Test-Session header, replayed into the request's service.
+        // ponytail: load/ask/store is not atomic; the runner sends one request at a time per key.
+        private static readonly ConcurrentDictionary<string, List<AIChatService.ChatMessageEntry>> Sessions = new();
+
         private readonly AIToolsProvider _toolsProvider;
         private readonly AIChatService _chatService;
 
-        public TestApiController(AIToolsProvider toolsProvider, AIChatService chatService)
+        private string SessionKey => Request.Headers["X-Test-Session"].FirstOrDefault() ?? "default";
+
+        public TestApiController(AIToolsProvider toolsProvider, AIChatService chatService, NavigationRequestQueue navigation, IServiceProvider services)
         {
             _toolsProvider = toolsProvider;
             _chatService = chatService;
+            // Tools read through the scope's secured object space (SEC-001): a request scope has no
+            // user, so log Admin on here, the way the evals always ran.
+            SignIn(services, "Admin");
+            // A request scope has no window to execute UI requests: acknowledge them so the evals
+            // can assert on the tool trace (the YAML runner checks which tools were called, not the UI).
+            navigation.OnRequest += () =>
+            {
+                while (navigation.TryDequeue(out var request))
+                {
+                    request.Outcome = NavigationResult.Success;
+                    request.MarkDone();
+                }
+            };
         }
 
         /// <summary>
@@ -78,7 +123,10 @@ namespace XafTornado.Blazor.Server.Controllers
 
             try
             {
+                if (Sessions.TryGetValue(SessionKey, out var history))
+                    _chatService.LoadHistory(history);
                 var result = await _chatService.AskAsync(request.Prompt);
+                Sessions[SessionKey] = _chatService.History.ToList();
                 var toolCalls = _chatService.LastToolCalls.Select(c => new
                 {
                     name = c.Name,
@@ -100,8 +148,23 @@ namespace XafTornado.Blazor.Server.Controllers
         [HttpPost("clear")]
         public IActionResult ClearHistory()
         {
-            _chatService.ClearHistory();
+            Sessions.TryRemove(SessionKey, out _);
             return Ok(new { cleared = true });
+        }
+
+        /// <summary>
+        /// Logs <paramref name="userName"/> on in <paramref name="scope"/> (dxdocs "User Logon and
+        /// Authentication", the nested-scope impersonation pattern). The lookup space can go once
+        /// SignIn returned: the scope's security keeps its own logon space.
+        /// </summary>
+        public static void SignIn(IServiceProvider scope, string userName)
+        {
+            using var os = scope.GetRequiredService<INonSecuredObjectSpaceFactory>().CreateNonSecuredObjectSpace<ApplicationUser>();
+            var user = scope.GetRequiredService<UserManager>().FindUserByName<ApplicationUser>(os, userName)
+                ?? throw new InvalidOperationException($"No user '{userName}'.");
+            var result = scope.GetRequiredService<SignInManager>().SignIn(user);
+            if (!result.Succeeded)
+                throw new InvalidOperationException($"Sign-in as '{userName}' failed: {result.Error?.Message}");
         }
 
         public record ToolRequest(string Tool, Dictionary<string, JsonElement> Params);

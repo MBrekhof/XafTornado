@@ -2,10 +2,9 @@
 
 @using DevExpress.AIIntegration.Blazor.Chat
 @using DevExpress.Blazor
-@using XafTornado.Blazor.Server.Services
 @using XafTornado.Module.Services
 @inject IJSRuntime JS
-@inject BlazorNavigationService NavService
+@inject NavigationRequestQueue NavService
 @implements IDisposable
 
 <button class="copilot-toggle-btn @(IsOpen ? "panel-open" : "")"
@@ -63,6 +62,8 @@
     private bool _isOpen;
     private bool _renderChat;
     private bool _showLog;
+
+    // The log is this circuit's own trace (AILogScope, SEC-004), so every user may see it.
 
     private bool IsOpen
     {
