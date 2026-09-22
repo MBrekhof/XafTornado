@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using DevExpress.ExpressApp;
 using DevExpress.ExpressApp.DC;
+using DevExpress.ExpressApp.Security;
 using LlmTornado.Common;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
@@ -33,9 +34,9 @@ namespace XafTornado.Module.Services
         private List<AIFunction> _tools;
 
         /// <summary>
-        /// When set (WinForms), ObjectSpaces are created via <c>Application.CreateObjectSpace</c>,
-        /// bypassing <c>INonSecuredObjectSpaceFactory</c> which doesn't work from manually-created
-        /// DI scopes in WinForms. Requires <see cref="Dispatch"/> so the call lands on the UI thread.
+        /// When set (WinForms), ObjectSpaces come from <c>Application.CreateObjectSpace</c> (secured,
+        /// the logged-on user's). Requires <see cref="Dispatch"/> so the call lands on the UI thread.
+        /// Blazor uses the scope's <see cref="IObjectSpaceFactory"/> instead.
         /// </summary>
         public XafApplication Application { get; set; }
 
@@ -177,50 +178,39 @@ namespace XafTornado.Module.Services
         // -- Helpers ---------------------------------------------------------------
 
         /// <summary>
-        /// Creates a DI scope + non-secured object space for the given entity type.
-        /// Callers MUST dispose the returned <see cref="ScopedObjectSpace"/>
-        /// which disposes both the object space and the scope.
+        /// The logged-on user's secured object space (SEC-001): the application's in WinForms, the
+        /// scope's <see cref="IObjectSpaceFactory"/> in Blazor (this provider is scoped per circuit,
+        /// so the factory carries that circuit's user). Callers dispose the returned wrapper.
         /// </summary>
         private ScopedObjectSpace GetObjectSpace(Type entityType)
         {
-            // WinForms: INonSecuredObjectSpaceFactory doesn't work from manually-created
-            // DI scopes. Use XafApplication.CreateObjectSpace; Dispatch put us on the UI thread.
             if (Application != null)
-                return new ScopedObjectSpace(Application.CreateObjectSpace(entityType), null);
+                return new ScopedObjectSpace(Application.CreateObjectSpace(entityType));   // Dispatch put us on the UI thread
 
-            // Blazor: DI scope + INonSecuredObjectSpaceFactory (AsyncLocal carries context).
-            var scope = _serviceProvider.CreateScope();
-            try
-            {
-                var factory = scope.ServiceProvider.GetRequiredService<INonSecuredObjectSpaceFactory>();
-                var os2 = factory.CreateNonSecuredObjectSpace(entityType);
-                return new ScopedObjectSpace(os2, scope);
-            }
-            catch
-            {
-                scope.Dispose(); // AI-009: nobody else will
-                throw;
-            }
+            return new ScopedObjectSpace(_serviceProvider.GetRequiredService<IObjectSpaceFactory>().CreateObjectSpace(entityType));
         }
 
-        /// <summary>Wraps an IObjectSpace + IServiceScope for joint disposal.</summary>
-        private sealed class ScopedObjectSpace : IDisposable
+        /// <summary>Wraps an IObjectSpace for disposal at the end of a tool body.</summary>
+        private sealed class ScopedObjectSpace(IObjectSpace os) : IDisposable
         {
-            public IObjectSpace Os { get; }
-            private readonly IServiceScope _scope;
-
-            public ScopedObjectSpace(IObjectSpace os, IServiceScope scope)
-            {
-                Os = os;
-                _scope = scope;
-            }
-
-            public void Dispose()
-            {
-                try { Os.Dispose(); }
-                finally { _scope?.Dispose(); }
-            }
+            public IObjectSpace Os { get; } = os;
+            public void Dispose() => Os.Dispose();
         }
+
+        // -- Permissions ------------------------------------------------------------
+        // A secured object space filters reads silently and drops unauthorised writes silently
+        // (dxdocs: 2-Tier Security, Integrated Mode), so a tool must ask first to answer truthfully.
+
+        private IRequestSecurityStrategy Security =>
+            (Application?.Security ?? _serviceProvider.GetService<ISecurityStrategyBase>()) as IRequestSecurityStrategy;
+
+        private bool CanRead(Type type, IObjectSpace os) => Security?.CanRead(type, os) ?? true;
+        private bool CanReadMember(IObjectSpace os, object obj, string member) => Security?.CanRead(os, obj, member) ?? true;
+        private bool CanCreate(Type type, IObjectSpace os) => Security?.CanCreate(type, os) ?? true;
+        private bool CanWrite(IObjectSpace os, object obj, string member = null) => Security?.CanWrite(os, obj, member) ?? true;
+
+        private static string PermissionDenied(string entity, string operation, string member = null) =>
+            Json(new { error = "permission denied", entity, operation, member });
 
         // -- JSON result helpers ---------------------------------------------------
         // Every tool returns one JSON object. Errors are { "error": "...", ...hints }.
@@ -257,20 +247,21 @@ namespace XafTornado.Module.Services
 
         /// <summary>
         /// Projects an entity object to an ordered dictionary: id, scalar properties (raw CLR values),
-        /// then to-one references as display text.
+        /// then to-one references as display text. A member the user may not read is left out:
+        /// the secured space would hand back the type's default value as if it were real.
         /// </summary>
-        private static Dictionary<string, object> ToRecord(object obj, EntityInfo entityInfo, ITypeInfo typeInfo)
+        private Dictionary<string, object> ToRecord(object obj, EntityInfo entityInfo, ITypeInfo typeInfo, IObjectSpace os)
         {
             var record = new Dictionary<string, object> { ["id"] = KeyOf(obj, typeInfo) };
             foreach (var prop in entityInfo.Properties)
             {
                 var member = typeInfo.FindMember(prop.Name);
-                if (member != null) record[prop.Name] = member.GetValue(obj);
+                if (member != null && CanReadMember(os, obj, prop.Name)) record[prop.Name] = member.GetValue(obj);
             }
             foreach (var rel in entityInfo.Relationships.Where(r => !r.IsCollection))
             {
                 var member = typeInfo.FindMember(rel.PropertyName);
-                if (member == null) continue;
+                if (member == null || !CanReadMember(os, obj, rel.PropertyName)) continue;
                 var refObj = member.GetValue(obj);
                 record[rel.PropertyName] = refObj == null ? null : GetObjectDisplayText(refObj);
             }
@@ -473,10 +464,12 @@ namespace XafTornado.Module.Services
 
                 using var sos = GetObjectSpace(entityType);
                 var os = sos.Os;
+                if (!CanRead(entityType, os)) return PermissionDenied(entityInfo.Name, "read");
                 var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityType);
 
                 // ponytail: load-all + in-memory filter; fine for a demo-sized DB,
-                // switch to criteria-based GetObjects when row counts matter.
+                // switch to criteria-based GetObjects when row counts matter. Row-level permissions
+                // apply here: the secured space returns only the rows this user may read.
                 IEnumerable<object> results = os.GetObjects(entityType).Cast<object>();
 
                 foreach (var (key, value) in ParsePairs(filter))
@@ -534,7 +527,7 @@ namespace XafTornado.Module.Services
                     entity = entityInfo.Name,
                     count = list.Count,
                     truncated = truncated ? true : (bool?)null,
-                    records = list.Select(o => ToRecord(o, entityInfo, typeInfo)).ToList(),
+                    records = list.Select(o => ToRecord(o, entityInfo, typeInfo, os)).ToList(),
                 });
                 _logger.LogInformation("[Tool:query_entity] Returning {Len} chars, {Count} records", result.Length, list.Count);
                 return result;
@@ -564,6 +557,7 @@ namespace XafTornado.Module.Services
                 var entityType = entityInfo.ClrType;
                 using var sos = GetObjectSpace(entityType);
                 var os = sos.Os;
+                if (!CanCreate(entityType, os)) return PermissionDenied(entityInfo.Name, "create");
                 var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityType);
 
                 var obj = os.CreateObject(entityType);
@@ -577,13 +571,14 @@ namespace XafTornado.Module.Services
                     {
                         var member = typeInfo.FindMember(propInfo.Name);
                         if (member == null) continue;
+                        if (!CanWrite(os, obj, propInfo.Name)) return PermissionDenied(entityInfo.Name, "write", propInfo.Name);
                         try
                         {
                             var converted = ConvertValue(value, propInfo.ClrType);
                             member.SetValue(obj, converted);
                             values[propInfo.Name] = converted;
                         }
-                        catch (Exception ex)
+                        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException or ArgumentException)
                         {
                             return Error($"Error setting {propInfo.Name}: cannot convert '{value}' to {propInfo.TypeName}. {ex.Message}");
                         }
@@ -594,6 +589,7 @@ namespace XafTornado.Module.Services
                         .FirstOrDefault(r => !r.IsCollection && r.PropertyName.Equals(key, StringComparison.OrdinalIgnoreCase));
                     if (relInfo != null)
                     {
+                        if (!CanWrite(os, obj, relInfo.PropertyName)) return PermissionDenied(entityInfo.Name, "write", relInfo.PropertyName);
                         var (matched, error) = FindReference(os, relInfo, value);
                         if (error != null) return error;
                         var member = typeInfo.FindMember(relInfo.PropertyName);
@@ -673,6 +669,7 @@ namespace XafTornado.Module.Services
                 string display;
                 using (var sos = GetObjectSpace(entityInfo.ClrType))
                 {
+                    if (!CanRead(entityInfo.ClrType, sos.Os)) return PermissionDenied(entityInfo.Name, "read");
                     var (match, candidates) = FindRecord(sos.Os, entityInfo.ClrType, identifier);
                     if (match == null && candidates.Count > 1)
                         return AmbiguousError(entityInfo.Name, identifier, candidates, entityInfo.ClrType);
@@ -715,14 +712,17 @@ namespace XafTornado.Module.Services
                         try
                         {
                             using var sos = GetObjectSpace(entityInfo.ClrType);
-                            var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityInfo.ClrType);
-                            var key = ConvertValue(_activeViewContext.CurrentObjectKey, typeInfo.KeyMember.MemberType);
-                            var obj = sos.Os.GetObjectByKey(entityInfo.ClrType, key);
-                            if (obj != null) fields = ToRecord(obj, entityInfo, typeInfo);
+                            if (CanRead(entityInfo.ClrType, sos.Os))
+                            {
+                                var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityInfo.ClrType);
+                                var key = ConvertValue(_activeViewContext.CurrentObjectKey, typeInfo.KeyMember.MemberType);
+                                var obj = sos.Os.GetObjectByKey(entityInfo.ClrType, key);
+                                if (obj != null) fields = ToRecord(obj, entityInfo, typeInfo, sos.Os);
+                            }
                         }
-                        catch
+                        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException)
                         {
-                            // Best effort — don't fail the tool if we can't load the record
+                            // The key in the view context is not this type's key: fields stay null.
                         }
                     }
                     record = new
@@ -853,14 +853,17 @@ namespace XafTornado.Module.Services
                 var entityType = entityInfo.ClrType;
                 using var sos = GetObjectSpace(entityType);
                 var os = sos.Os;
+                if (!CanRead(entityType, os)) return PermissionDenied(entityInfo.Name, "read");
                 var typeInfo = XafTypesInfo.Instance.FindTypeInfo(entityType);
 
-                // Key first (the id from query_entity / get_active_view), then display text.
+                // Key first (the id from query_entity / get_active_view), then display text. A row
+                // this user may not read is not in the secured space at all: "not found" is the truth.
                 var (obj, candidates) = FindRecord(os, entityType, identifier);
                 if (obj == null && candidates.Count > 1)
                     return AmbiguousError(entityInfo.Name, identifier, candidates, entityType);
                 if (obj == null)
                     return Error($"No {entityInfo.Name} record found matching '{identifier}'.");
+                if (!CanWrite(os, obj)) return PermissionDenied(entityInfo.Name, "write");
 
                 var changes = new Dictionary<string, object>();
 
@@ -872,6 +875,7 @@ namespace XafTornado.Module.Services
                     {
                         var member = typeInfo.FindMember(propInfo.Name);
                         if (member == null) continue;
+                        if (!CanWrite(os, obj, propInfo.Name)) return PermissionDenied(entityInfo.Name, "write", propInfo.Name);
                         try
                         {
                             var oldVal = member.GetValue(obj);
@@ -879,7 +883,7 @@ namespace XafTornado.Module.Services
                             member.SetValue(obj, converted);
                             changes[propInfo.Name] = new { from = oldVal, to = converted };
                         }
-                        catch (Exception ex)
+                        catch (Exception ex) when (ex is FormatException or OverflowException or InvalidCastException or ArgumentException)
                         {
                             return Error($"Error setting {propInfo.Name}: cannot convert '{value}' to {propInfo.TypeName}. {ex.Message}");
                         }
@@ -890,6 +894,7 @@ namespace XafTornado.Module.Services
                         .FirstOrDefault(r => !r.IsCollection && r.PropertyName.Equals(key, StringComparison.OrdinalIgnoreCase));
                     if (relInfo != null)
                     {
+                        if (!CanWrite(os, obj, relInfo.PropertyName)) return PermissionDenied(entityInfo.Name, "write", relInfo.PropertyName);
                         var (matched, error) = FindReference(os, relInfo, value);
                         if (error != null) return error;
                         var member = typeInfo.FindMember(relInfo.PropertyName);

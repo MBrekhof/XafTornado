@@ -170,7 +170,7 @@ toolsProvider.UiContext = SynchronizationContext.Current;
 winApplication.Start();
 ```
 
-**Important WinForms note:** In WinForms, `INonSecuredObjectSpaceFactory` does not work from manually-created DI scopes because XAF's `SimpleValueManager` doesn't propagate application context. The `Application` and `UiContext` properties on `AIToolsProvider` enable ObjectSpace creation via `XafApplication.CreateObjectSpace()` dispatched to the UI thread.
+**Important WinForms note:** In WinForms, set `AIToolsProvider.Application` (ObjectSpaces come from `XafApplication.CreateObjectSpace()`, the logged-on user's) and `AIToolsProvider.Dispatch` (tool bodies run on the UI thread through `SynchronizationContext.Send`), as `Program.cs` does after `Setup()`. Blazor needs neither: the scope's `IObjectSpaceFactory` carries the circuit's user, and the executor controller sets `Dispatch`.
 
 ### PostgreSQL notes
 

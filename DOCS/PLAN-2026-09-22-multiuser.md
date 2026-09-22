@@ -130,6 +130,20 @@ Verification: ToolTests `User` cannot `query_entity Customer` (permission error)
 `update_entity`; readable-but-unwritable, row-restricted and member-restricted cases each get a test;
 `Admin` unchanged; evals unchanged (they run as Admin).
 
+Implemented 2026-09-22 (`fix/secured-object-space`, on top of Step 4). `GetObjectSpace` takes the
+scope's `IObjectSpaceFactory` (Blazor) or `Application.CreateObjectSpace` (WinForms); no scope is
+created. Because a secured EF Core space filters reads and **drops unauthorised writes silently**
+(dxdocs "2-Tier Security, Integrated Mode"), every data tool asks first through
+`IsGrantedExtensions` (`CanRead` type, `CanCreate`, `CanWrite` object and member) and answers
+`{ "error": "permission denied", entity, operation, member? }`; a record projection leaves out a
+member the user may not read instead of showing the type's default. Row-restricted rows are simply
+absent, so a keyed lookup of one answers "not found". The optional permissions tool (2.4) is not
+built. Headless logon: `TestApiController.SignIn(scope, user)` = `UserManager.FindUserByName` on a
+non-secured space + `SignInManager.SignIn` (dxdocs "User Logon and Authentication"); the test API
+signs Admin in per request, `AppFixture` keeps one signed-in scope per user and creates the
+`reader`, `germany` (row-restricted) and `nophone` (member-restricted) users with their roles for
+`SecurityTests`. Catch-alls narrowed to conversion exceptions (2.6).
+
 ### Step 3: per-scope log (SEC-004), rides on Step 1
 
 `AILoggerProvider` currently pushes every log line into the singleton `AILogStore`. Replace with:
