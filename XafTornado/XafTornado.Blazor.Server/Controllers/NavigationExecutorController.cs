@@ -92,7 +92,7 @@ namespace XafTornado.Blazor.Server.Controllers
             while (_queue != null && _queue.TryDequeue(out var request))
             {
                 _logger?.LogInformation("[NavExecutor] {Kind} {Entity} {Key} {Criteria}", request.Kind, request.EntityName, request.KeyValue, request.Criteria);
-                request.Outcome = _executor.Execute(request);
+                _executor.Run(request);
             }
         }
     }

@@ -47,7 +47,7 @@ Strategy and layers: `DOCS/TESTING.md`. AI tools return JSON — tests assert on
 ### Solution Structure (3-tier XAF pattern)
 
 - **`XafTornado.Module/`** — Platform-agnostic core: business objects (EF Core entities), attributes (`AIVisible`, `AIDescription`), XAF controllers, and all LLMTornado integration services. Both UI projects reference this.
-- **`XafTornado.Blazor.Server/`** — Blazor Server UI. Entry point: `Program.cs` → `Startup.cs`. Uses DevExpress `DxAIChat` Blazor component for the chat UI (`Editors/AIChatViewItem/AIChat.razor`). Contains `BlazorNavigationService` (queue-based `INavigationService` implementation).
+- **`XafTornado.Blazor.Server/`** — Blazor Server UI. Entry point: `Program.cs` → `Startup.cs`. Uses DevExpress `DxAIChat` Blazor component for the chat UI (`Editors/AIChatViewItem/AIChat.razor`). Contains `NavigationExecutorController`, which runs the circuit's `NavigationRequestQueue` on the circuit's synchronization context.
 - **`XafTornado.Win/`** — WinForms UI (net10.0-windows). Uses DevExpress `AIChatControl` for the chat UI.
 
 ### LLMTornado Integration (Module/Services/)
@@ -68,7 +68,7 @@ The integration chain flows:
 - **Non-Persistent Business Objects**: `AIChat` is a `DomainComponent` (not stored in DB) — it exists only to host the chat ViewItem in XAF's navigation.
 - **ScopedObjectSpace pattern**: Tool methods in `AIToolsProvider` create a DI scope + non-secured ObjectSpace per call, disposed after use. This is required because tools run outside the normal XAF request lifecycle.
 - **Model switching at runtime**: `SelectAIModelController` lets users switch AI models (claude-sonnet-4-6, gpt-4o, gemini-2.5-pro, etc.) via a `SingleChoiceAction` that sets `AIChatService.CurrentModel` and clears conversation history.
-- **Navigation queue pattern**: `BlazorNavigationService` enqueues navigation/filter/save/close requests; `NavigationExecutorController` dequeues and executes them on the XAF UI thread.
+- **UI request pattern**: tools submit a `UiRequest` to the scoped `NavigationRequestQueue` (Module); the platform executor controller (`NavigationExecutorController` / `WinNavigationExecutorController`) runs it through `UiRequestExecutor` on the UI thread. Tool bodies already run there (`AIToolsProvider.Dispatch`), so the request executes inline and the tool returns the real `NavigationResult`; a request nobody executed is abandoned and reported as such, never as ok.
 - **Two-tier schema discovery**: System prompt contains only entity names + descriptions. Full property/relationship details loaded on-demand via `describe_entity` tool.
 - **XAF Model Differences**: `Model.DesignedDiffs.xafml` (embedded in Module) and `Model.xafml` (copied to output in UI projects) configure XAF views, navigation, and layout.
 

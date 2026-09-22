@@ -2,7 +2,6 @@ using System;
 using System.Linq;
 using DevExpress.Data.Filtering;
 using DevExpress.ExpressApp;
-using DevExpress.Persistent.Validation;
 using Microsoft.Extensions.Logging;
 
 namespace XafTornado.Module.Services
@@ -29,7 +28,19 @@ namespace XafTornado.Module.Services
             _logger = logger;
         }
 
-        /// <summary>Runs the request; exceptions become a failed result, never an escaped exception.</summary>
+        /// <summary>Runs a claimed request and completes it; exceptions become a failed result, never an escaped exception.</summary>
+        public void Run(UiRequest request)
+        {
+            try
+            {
+                request.Outcome = Execute(request);
+            }
+            finally
+            {
+                request.MarkDone();
+            }
+        }
+
         public NavigationResult Execute(UiRequest request)
         {
             try
@@ -72,14 +83,25 @@ namespace XafTornado.Module.Services
             try
             {
                 var listView = _application.CreateListView(listViewId, _application.CreateCollectionSource(os, entityInfo.ClrType, listViewId), true);
-                _application.ShowViewStrategy.ShowViewFromCommonView(listView);
-                os = null;   // the view owns it now
-                return NavigationResult.Success;
+                return Show(listView, ref os);
             }
             finally
             {
                 os?.Dispose();   // AI-009: nothing else will
             }
+        }
+
+        /// <summary>
+        /// Shows the view; from here the view owns the ObjectSpace. Known gap: the Blazor tabbed
+        /// MDI strategy refuses silently (a warning, no exception, no ViewShown) once its tab limit
+        /// is reached, and nothing observable here tells that apart from success, since in Blazor
+        /// ViewShown fires after this call returns. That refusal still reads as ok.
+        /// </summary>
+        private NavigationResult Show(View view, ref IObjectSpace os)
+        {
+            _application.ShowViewStrategy.ShowViewFromCommonView(view);
+            os = null;
+            return NavigationResult.Success;
         }
 
         private NavigationResult NavigateToDetail(string entityName, string keyValue)
@@ -105,9 +127,7 @@ namespace XafTornado.Module.Services
                 if (obj == null) return NavigationResult.Fail($"No {entityInfo.Name} record found matching '{keyValue}'.");
 
                 var detailView = _application.CreateDetailView(os, obj);
-                _application.ShowViewStrategy.ShowViewFromCommonView(detailView);
-                os = null;
-                return NavigationResult.Success;
+                return Show(detailView, ref os);
             }
             finally
             {
@@ -148,16 +168,9 @@ namespace XafTornado.Module.Services
             var os = view.ObjectSpace;
             if (!os.IsModified) return NavigationResult.Fail("There are no unsaved changes.");
 
-            // The Save action would run the validation rules; a raw CommitChanges does not (dxdocs:
-            // PersistenceValidationController). Run them here so a broken rule is a reported failure.
-            var validation = Validator.GetService(_application.ServiceProvider)
-                .ValidateAllTargets(os, os.ModifiedObjects, DefaultContexts.Save);
-            if (validation.State == ValidationState.Invalid)
-            {
-                var messages = validation.Results.Where(r => r.State == ValidationState.Invalid).Select(r => r.ErrorMessage).Distinct();
-                return NavigationResult.Fail("Validation failed: " + string.Join(" ", messages));
-            }
-
+            // The view's PersistenceValidationController validates on ObjectSpace.Committing exactly
+            // as for the Save action and throws ValidationException on a broken rule; Execute turns
+            // that, like a database rejection, into a failed result.
             os.CommitChanges();
             return NavigationResult.Success;
         }
@@ -166,8 +179,9 @@ namespace XafTornado.Module.Services
         {
             var view = ActiveView;
             if (view == null) return NavigationResult.Fail("No view is active.");
-            view.Close();
-            return NavigationResult.Success;
+            return view.Close()
+                ? NavigationResult.Success
+                : NavigationResult.Fail("The view refused to close (unsaved changes?).");
         }
     }
 }

@@ -46,20 +46,23 @@ namespace XafTornado.Module.Services
         {
             _queue.Enqueue(request);
             OnRequest?.Invoke();
-            if (request.Outcome != null)
-                return request.Outcome;
-            // Nobody ran it inline (no executor, or one on another thread): never let it run later
-            // against whatever view is active by then.
-            request.Abandoned = true;
-            return NavigationResult.Fail(NotConfirmed);
+            // Nobody claimed it inline (no executor, or one on another thread that has not got to
+            // it): abandon it so it can never run later against whatever view is active by then.
+            if (request.TryAbandon())
+                return NavigationResult.Fail(NotConfirmed);
+            // An executor claimed it. Inline that means it is already done; off-thread (WinForms
+            // BeginInvoke) wait for it: the executor is on the UI thread, this thread is not.
+            return request.WaitDone(10_000) && request.Outcome != null
+                ? request.Outcome
+                : NavigationResult.Fail(NotConfirmed);
         }
 
-        /// <summary>Next pending request, skipping abandoned ones.</summary>
+        /// <summary>Next request nobody has abandoned; the caller owns it (claimed) and must MarkDone it.</summary>
         public bool TryDequeue(out UiRequest request)
         {
             while (_queue.TryDequeue(out request))
             {
-                if (!request.Abandoned) return true;
+                if (request.TryClaim()) return true;
             }
             request = null;
             return false;

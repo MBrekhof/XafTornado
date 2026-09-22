@@ -297,6 +297,37 @@ public class NavigationToolTests(AppFixture app)
     }
 
     [Fact]
+    public void UiRequestHandOff_IsAtomic_AcrossThreads()   // AI-007, WinForms BeginInvoke path
+    {
+        // Executor claims inline but finishes on another thread: the submitter waits for the outcome.
+        var queue = new NavigationRequestQueue();
+        queue.OnRequest += () =>
+        {
+            Assert.True(queue.TryDequeue(out var request));
+            Task.Run(async () => { await Task.Delay(150); request.Outcome = NavigationResult.Fail("late no"); request.MarkDone(); });
+        };
+        var late = queue.SaveActiveView();
+        Assert.False(late.Ok);
+        Assert.Equal("late no", late.Error);
+
+        // Executor only gets to the queue after the submitter gave up: the request never runs.
+        var slow = new NavigationRequestQueue();
+        var ran = 0;
+        var drained = new ManualResetEventSlim(false);
+        slow.OnRequest += () => Task.Run(async () =>
+        {
+            await Task.Delay(150);
+            while (slow.TryDequeue(out _)) ran++;
+            drained.Set();
+        });
+        var abandoned = slow.SaveActiveView();
+        Assert.False(abandoned.Ok);
+        Assert.Equal(NavigationRequestQueue.NotConfirmed, abandoned.Error);
+        Assert.True(drained.Wait(5000));
+        Assert.Equal(0, ran);
+    }
+
+    [Fact]
     public async Task UiTools_WithoutAnExecutor_SayNotConfirmed_NeverOk()   // AI-007
     {
         using var scope = app.Services.CreateScope();   // no window, no fake executor

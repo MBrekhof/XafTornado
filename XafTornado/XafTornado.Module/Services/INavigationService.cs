@@ -1,3 +1,5 @@
+using System.Threading;
+
 namespace XafTornado.Module.Services
 {
     /// <summary>
@@ -22,7 +24,7 @@ namespace XafTornado.Module.Services
         /// <summary>Refresh the active view's data from the database (after AI creates/updates records).</summary>
         NavigationResult RefreshActiveView();
 
-        /// <summary>Save (commit) changes in the active detail view, after XAF validation.</summary>
+        /// <summary>Save (commit) changes in the active detail view; XAF validation runs as for the Save action.</summary>
         NavigationResult SaveActiveView();
 
         /// <summary>Close the active view and return to the previous one.</summary>
@@ -41,15 +43,35 @@ namespace XafTornado.Module.Services
 
     public enum UiRequestKind { NavigateToList, NavigateToDetail, Filter, ClearFilter, Refresh, Save, Close }
 
-    /// <summary>One request from a tool to the UI; the executor fills <see cref="Outcome"/>.</summary>
+    /// <summary>
+    /// One request from a tool to the UI. Exactly one of two things happens to it: an executor
+    /// claims and runs it, or the submitter abandons it because nobody answered inline. The
+    /// state is an atomic hand-off so an executor on another thread (WinForms BeginInvoke) can
+    /// neither run an abandoned request nor be lost after claiming one.
+    /// </summary>
     public sealed class UiRequest
     {
+        private const int Pending = 0, Claimed = 1, AbandonedState = 2;
+        private int _state;
+        private readonly ManualResetEventSlim _done = new(false);
+
         public UiRequestKind Kind { get; init; }
         public string EntityName { get; init; }
         public string KeyValue { get; init; }
         public string Criteria { get; init; }
+
+        /// <summary>Set by the executor before <see cref="MarkDone"/>; read by the submitter after <see cref="WaitDone"/>.</summary>
         public NavigationResult Outcome { get; set; }
-        /// <summary>Set when no executor answered inline: a later executor must not run it against another view.</summary>
-        public bool Abandoned { get; set; }
+
+        /// <summary>Executor side: true once, false if the submitter already abandoned it.</summary>
+        public bool TryClaim() => Interlocked.CompareExchange(ref _state, Claimed, Pending) == Pending;
+
+        /// <summary>Submitter side: true if no executor claimed it; the request must then never run.</summary>
+        public bool TryAbandon() => Interlocked.CompareExchange(ref _state, AbandonedState, Pending) == Pending;
+
+        public void MarkDone() => _done.Set();
+
+        /// <summary>Waits for a claimed request to finish (the executor is on the UI thread, the waiter is not).</summary>
+        public bool WaitDone(int millisecondsTimeout) => _done.Wait(millisecondsTimeout);
     }
 }

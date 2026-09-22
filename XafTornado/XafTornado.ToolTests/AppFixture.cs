@@ -77,6 +77,7 @@ public sealed class AppFixture : IDisposable
             {
                 recorded.Add(request);
                 request.Outcome = outcome();
+                request.MarkDone();
             }
         };
     }

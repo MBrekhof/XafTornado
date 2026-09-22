@@ -72,7 +72,7 @@ namespace XafTornado.Win.Controllers
         private void OnRequest()
         {
             if (_uiControl != null && _uiControl.IsHandleCreated && _uiControl.InvokeRequired)
-                _uiControl.BeginInvoke(Drain);   // off the UI thread: the tool will report "not confirmed"
+                _uiControl.BeginInvoke(Drain);   // off the UI thread: Submit waits for the claimed request, or abandons it first
             else
                 Drain();
         }
@@ -82,7 +82,7 @@ namespace XafTornado.Win.Controllers
             while (_queue != null && _queue.TryDequeue(out var request))
             {
                 _logger?.LogInformation("[WinNavExecutor] {Kind} {Entity} {Key} {Criteria}", request.Kind, request.EntityName, request.KeyValue, request.Criteria);
-                request.Outcome = _executor.Execute(request);
+                _executor.Run(request);
             }
         }
     }

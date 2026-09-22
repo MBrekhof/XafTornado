@@ -60,7 +60,10 @@ namespace XafTornado.Blazor.Server.Controllers
             navigation.OnRequest += () =>
             {
                 while (navigation.TryDequeue(out var request))
+                {
                     request.Outcome = NavigationResult.Success;
+                    request.MarkDone();
+                }
             };
         }
 
