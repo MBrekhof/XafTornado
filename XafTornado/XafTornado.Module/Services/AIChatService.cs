@@ -19,22 +19,36 @@ using Polly.Retry;
 
 namespace XafTornado.Module.Services
 {
+    /// <summary>
+    /// One conversation: history, model, last tool calls. Scoped, so Blazor gets one per circuit
+    /// and WinForms one per process (SEC-002). Only the <see cref="TornadoApi"/> is shared, via
+    /// <see cref="TornadoApiProvider"/>.
+    /// </summary>
     public sealed class AIChatService : IDisposable
     {
         private readonly AIOptions _options;
+        private readonly TornadoApiProvider _apiProvider;
         private readonly ILogger<AIChatService> _logger;
-        private TornadoApi _api;
-        private readonly SemaphoreSlim _initLock = new(1, 1);
-        private bool _initialized;
 
         // Conversation history for continuity across messages
         private readonly List<ChatMessageEntry> _history = new();
         private const int MaxHistoryMessages = 50;
 
+        // Two chat surfaces can share one circuit (AISidePanel + AIChat view item): one turn at a time.
+        private readonly SemaphoreSlim _turnLock = new(1, 1);
+        private CancellationTokenSource _turnCts;
+        // Bumped by ClearHistory. A turn that straddles a bump (waiting for the lock, in flight, or
+        // answered but not yet appended) yields nothing: the conversation it belonged to is gone.
+        private int _generation;
+        private string _model;
+
+        private const string ResetMessage = "The conversation was reset.";
+
+        /// <summary>Model for this conversation; defaults to <see cref="AIOptions.Model"/>.</summary>
         public string CurrentModel
         {
-            get => _options.Model;
-            set => _options.Model = value;
+            get => _model ?? _options.Model;
+            set => _model = value;
         }
 
         /// <summary>
@@ -56,80 +70,82 @@ namespace XafTornado.Module.Services
         /// <summary>One tool invocation made by the model during a turn.</summary>
         public sealed record ToolCall(string Name, string Arguments, string Result);
 
-        // ponytail: singleton-wide "last turn" trace; fine for one dev/test user at a time,
-        // make it per-conversation when sessions are isolated (Phase 3 C).
         private List<ToolCall> _lastToolCalls = new();
 
         /// <summary>Tool calls made during the most recent <see cref="AskAsync"/>, in order. Used by LLM evals.</summary>
         public IReadOnlyList<ToolCall> LastToolCalls => _lastToolCalls;
 
-        public AIChatService(IOptions<AIOptions> optionsAccessor, ILogger<AIChatService> logger)
+        /// <summary>Snapshot of the conversation so far (user/assistant pairs).</summary>
+        public IReadOnlyList<ChatMessageEntry> History
         {
-            _options = optionsAccessor?.Value ?? new AIOptions();
-            _logger = logger;
+            get { lock (_history) return _history.ToList(); }
         }
 
-        private void EnsureInitialized()
+        public AIChatService(TornadoApiProvider apiProvider, IOptions<AIOptions> optionsAccessor, ILogger<AIChatService> logger)
         {
-            if (_initialized) return;
-            _initLock.Wait();
-            try
-            {
-                if (_initialized) return;
-
-                var providerKeys = new List<ProviderAuthentication>();
-                foreach (var (providerId, apiKey) in _options.ApiKeys)
-                {
-                    if (string.IsNullOrWhiteSpace(apiKey)) continue;
-                    var provider = MapProvider(providerId);
-                    if (provider != null)
-                        providerKeys.Add(new ProviderAuthentication(provider.Value, apiKey));
-                }
-
-                if (providerKeys.Count == 0)
-                    throw new InvalidOperationException(
-                        "No API keys configured. Add at least one provider key to AI:ApiKeys in appsettings.json.");
-
-                _api = new TornadoApi(providerKeys);
-                _initialized = true;
-                _logger.LogInformation("[TornadoInit] Initialized with {Count} providers", providerKeys.Count);
-            }
-            finally
-            {
-                _initLock.Release();
-            }
+            _apiProvider = apiProvider ?? throw new ArgumentNullException(nameof(apiProvider));
+            _options = optionsAccessor?.Value ?? new AIOptions();
+            _logger = logger;
         }
 
         public async Task<string> AskAsync(string prompt, CancellationToken cancellationToken = default)
         {
             ArgumentException.ThrowIfNullOrWhiteSpace(prompt);
-            EnsureInitialized();
-            _lastToolCalls = new List<ToolCall>();
+            var api = _apiProvider.Api;
+            var generation = Volatile.Read(ref _generation);
 
-            var provider = ResolveProvider(_options.Model);
-            var attempt = new AttemptState();
-            var pipeline = CreateRetryPipeline(attempt);
-            int toolIterations = 0;
-
+            await _turnLock.WaitAsync(cancellationToken);
             // AIOptions.TimeoutSeconds bounds the whole turn: every model round-trip plus every tool call (AI-008).
-            using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            if (_options.TimeoutSeconds > 0)
-                turnCts.CancelAfter(TimeSpan.FromSeconds(_options.TimeoutSeconds));
+            var turnCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            try
+            {
+                if (generation != Volatile.Read(ref _generation))
+                    return ResetMessage;   // reset while this surface waited for the running turn
+                _turnCts = turnCts;
+                if (_options.TimeoutSeconds > 0)
+                    turnCts.CancelAfter(TimeSpan.FromSeconds(_options.TimeoutSeconds));
+                return await AskCoreAsync(api, prompt, cancellationToken, turnCts, generation);
+            }
+            finally
+            {
+                _turnCts = null;
+                turnCts.Dispose();
+                _turnLock.Release();
+            }
+        }
+
+        private async Task<string> AskCoreAsync(TornadoApi api, string prompt, CancellationToken cancellationToken, CancellationTokenSource turnCts, int generation)
+        {
+            // This turn's trace is a local: a Reset() mid-turn swaps _lastToolCalls for a fresh
+            // list, and a late tool result must not land in the next conversation's trace.
+            var calls = new List<ToolCall>();
+            _lastToolCalls = calls;
+
+            var model = CurrentModel;
+            var provider = ResolveProvider(model);
+            var attempt = new AttemptState();
+            var pipeline = CreateRetryPipeline(attempt, model);
+            int toolIterations = 0;
 
             ChatRichResponse response;
             try
             {
                 response = await pipeline.ExecuteAsync(RunTurnAsync, turnCts.Token);
             }
+            catch (OperationCanceledException) when (generation != Volatile.Read(ref _generation))
+            {
+                _logger.LogInformation("[AskAsync] Turn cancelled by a conversation reset");
+                return ResetMessage;
+            }
             catch (OperationCanceledException) when (turnCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
             {
                 _logger.LogWarning("[AskAsync] Turn timed out after {Seconds}s ({Iterations} tool iterations)",
                     _options.TimeoutSeconds, toolIterations);
                 // Tools that ran before the timeout may have committed: say so instead of inviting a replay.
-                var ran = _lastToolCalls.Select(c => c.Name).Distinct().ToList();
+                var ran = calls.Select(c => c.Name).Distinct().ToList();
                 return ran.Count == 0
                     ? $"The AI request timed out after {_options.TimeoutSeconds} seconds. Please try again."
-                    : $"The AI request timed out after {_options.TimeoutSeconds} seconds. {_lastToolCalls.Count} tool call(s) already ran " +
+                    : $"The AI request timed out after {_options.TimeoutSeconds} seconds. {calls.Count} tool call(s) already ran " +
                       $"({string.Join(", ", ran)}); check the data before repeating a create or update.";
             }
 
@@ -140,7 +156,7 @@ namespace XafTornado.Module.Services
                 attempt.ToolsRan = false;
                 var chatRequest = new ChatRequest
                 {
-                    Model = new ChatModel(_options.Model, provider),
+                    Model = new ChatModel(model, provider),
                     MaxTokens = _options.MaxOutputTokens,
                     Temperature = 1.0
                 };
@@ -148,7 +164,7 @@ namespace XafTornado.Module.Services
                 if (TornadoTools is { Count: > 0 })
                     chatRequest.Tools = TornadoTools.ToList();
 
-                var conversation = _api.Chat.CreateConversation(chatRequest);
+                var conversation = api.Chat.CreateConversation(chatRequest);
 
                 // System prompt
                 var systemPrompt = SystemPromptFactory?.Invoke();
@@ -156,7 +172,8 @@ namespace XafTornado.Module.Services
                     conversation.AppendSystemMessage(systemPrompt);
 
                 // Replay conversation history for continuity
-                foreach (var entry in _history)
+                var history = History;
+                foreach (var entry in history)
                 {
                     if (entry.Role == "user")
                         conversation.AppendUserInput(entry.Content);
@@ -168,7 +185,7 @@ namespace XafTornado.Module.Services
                 conversation.AppendUserInput(prompt);
 
                 _logger.LogInformation("[AskAsync] Sending (model={Model}, provider={Provider}, tools={Tools}, history={History})",
-                    _options.Model, provider, TornadoTools?.Count ?? 0, _history.Count);
+                    model, provider, TornadoTools?.Count ?? 0, history.Count);
 
                 // GetResponseRich(fnHandler) populates tool results in the conversation
                 // but does NOT automatically re-send to the LLM. We must loop manually:
@@ -191,7 +208,8 @@ namespace XafTornado.Module.Services
                         foreach (var fc in functionCalls)
                         {
                             ct.ThrowIfCancellationRequested();
-                            var result = await ExecuteToolAsync(fc.Name, fc.Arguments ?? "{}", ct);
+                            var result = await ExecuteToolCoreAsync(fc.Name, fc.Arguments ?? "{}", ct);
+                            calls.Add(new ToolCall(fc.Name, fc.Arguments ?? "{}", result));
                             _logger.LogInformation("[ToolLoop] {Name} → {ResultLen} chars", fc.Name, result.Length);
                             fc.Result = new FunctionResult(fc, result);
                         }
@@ -229,15 +247,25 @@ namespace XafTornado.Module.Services
                 finalText = response.Text ?? string.Empty;
 
             // Update conversation history
-            _history.Add(new ChatMessageEntry("user", prompt));
-            if (!string.IsNullOrEmpty(finalText))
-                _history.Add(new ChatMessageEntry("assistant", finalText));
-
-            // Trim history to prevent unbounded growth
-            while (_history.Count > MaxHistoryMessages * 2)
+            lock (_history)
             {
-                _history.RemoveAt(0);
-                _history.RemoveAt(0); // Remove in pairs (user+assistant)
+                if (generation != _generation)
+                {
+                    // Reset landed between the model's answer and this append: the answer belongs
+                    // to a conversation (or, in WinForms, a user) that no longer exists.
+                    _logger.LogInformation("[AskAsync] Answer discarded: conversation was reset");
+                    return ResetMessage;
+                }
+                _history.Add(new ChatMessageEntry("user", prompt));
+                if (!string.IsNullOrEmpty(finalText))
+                    _history.Add(new ChatMessageEntry("assistant", finalText));
+
+                // Trim history to prevent unbounded growth
+                while (_history.Count > MaxHistoryMessages * 2)
+                {
+                    _history.RemoveAt(0);
+                    _history.RemoveAt(0); // Remove in pairs (user+assistant)
+                }
             }
 
             // Log token usage if available
@@ -256,9 +284,41 @@ namespace XafTornado.Module.Services
         }
 
         /// <summary>
-        /// Clears conversation history (e.g. when user switches models).
+        /// Clears conversation history (e.g. when user switches models) and cancels the turn in
+        /// flight, if any, so it cannot append to the cleared history. Cancel rather than wait on
+        /// the turn lock: this is called from the UI thread and a turn can run for TimeoutSeconds.
         /// </summary>
-        public void ClearHistory() => _history.Clear();
+        public void ClearHistory()
+        {
+            lock (_history)
+            {
+                _generation++;
+                try { _turnCts?.Cancel(); }
+                catch (ObjectDisposedException) { /* the turn finished between the null check and Cancel */ }
+                _history.Clear();
+            }
+        }
+
+        /// <summary>Replaces the history (test API: continuity across stateless requests).</summary>
+        public void LoadHistory(IEnumerable<ChatMessageEntry> entries)
+        {
+            lock (_history)
+            {
+                _history.Clear();
+                _history.AddRange(entries);
+            }
+        }
+
+        /// <summary>
+        /// Back to a fresh conversation: history, model and tool trace. WinForms calls this on
+        /// logoff because its application and DI scope outlive the user (SEC-002).
+        /// </summary>
+        public void Reset()
+        {
+            ClearHistory();
+            _model = null;
+            _lastToolCalls = new List<ToolCall>();
+        }
 
         public async IAsyncEnumerable<string> AskStreamingAsync(
             string prompt,
@@ -269,13 +329,6 @@ namespace XafTornado.Module.Services
             var response = await AskAsync(prompt, cancellationToken).ConfigureAwait(false);
             if (!string.IsNullOrEmpty(response))
                 yield return response;
-        }
-
-        private async Task<string> ExecuteToolAsync(string toolName, string argumentsJson, CancellationToken cancellationToken)
-        {
-            var result = await ExecuteToolCoreAsync(toolName, argumentsJson, cancellationToken);
-            _lastToolCalls.Add(new ToolCall(toolName, argumentsJson, result));
-            return result;
         }
 
         private async Task<string> ExecuteToolCoreAsync(string toolName, string argumentsJson, CancellationToken cancellationToken)
@@ -311,7 +364,7 @@ namespace XafTornado.Module.Services
             public bool ToolsRan;
         }
 
-        private ResiliencePipeline CreateRetryPipeline(AttemptState attempt)
+        private ResiliencePipeline CreateRetryPipeline(AttemptState attempt, string model)
         {
             return new ResiliencePipelineBuilder()
                 .AddRetry(new RetryStrategyOptions
@@ -338,7 +391,7 @@ namespace XafTornado.Module.Services
                     {
                         _logger.LogWarning(args.Outcome.Exception,
                             "[Retry] Attempt {Attempt}/3 for model {Model}, retrying in {Delay:F1}s",
-                            args.AttemptNumber + 1, _options.Model, args.RetryDelay.TotalSeconds);
+                            args.AttemptNumber + 1, model, args.RetryDelay.TotalSeconds);
                         return ValueTask.CompletedTask;
                     }
                 })
@@ -354,26 +407,15 @@ namespace XafTornado.Module.Services
             if (modelId.StartsWith("gemini", StringComparison.OrdinalIgnoreCase)) return LLmProviders.Google;
             if (modelId.StartsWith("mistral", StringComparison.OrdinalIgnoreCase)) return LLmProviders.Mistral;
 
-            return MapProvider(_options.DefaultProvider) ?? LLmProviders.Anthropic;
+            return TornadoApiProvider.MapProvider(_options.DefaultProvider) ?? LLmProviders.Anthropic;
         }
-
-        private static LLmProviders? MapProvider(string providerId) => providerId?.ToLowerInvariant() switch
-        {
-            "anthropic" => LLmProviders.Anthropic,
-            "openai" => LLmProviders.OpenAi,
-            "google" => LLmProviders.Google,
-            "mistral" => LLmProviders.Mistral,
-            "cohere" => LLmProviders.Cohere,
-            "voyage" => LLmProviders.Voyage,
-            "upstage" => LLmProviders.Upstage,
-            _ => null
-        };
 
         public void Dispose()
         {
-            _initLock.Dispose();
+            _turnLock.Dispose();
         }
 
-        private sealed record ChatMessageEntry(string Role, string Content);
+        /// <summary>One history entry; <c>Role</c> is "user" or "assistant".</summary>
+        public sealed record ChatMessageEntry(string Role, string Content);
     }
 }

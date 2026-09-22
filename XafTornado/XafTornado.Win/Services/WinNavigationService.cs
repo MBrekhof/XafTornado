@@ -67,6 +67,14 @@ namespace XafTornado.Win.Services
             OnCloseRequested?.Invoke();
         }
 
+        /// <summary>Drop everything pending: logoff, where the scope outlives the user.</summary>
+        public void Clear()
+        {
+            _navQueue.Clear();
+            _filterQueue.Clear();
+            _refreshRequested = _saveRequested = _closeRequested = false;
+        }
+
         public bool TryDequeueNavigation(out NavigationRequest request) =>
             _navQueue.TryDequeue(out request);
 

@@ -28,8 +28,13 @@ public sealed class AppFixture : IDisposable
     private const string DbName = "xaftornado_test";
 
     private readonly WebApplicationFactory<Program> _factory;
+    private readonly IServiceScope _scope;
 
+    /// <summary>The tools of one retained scope (the AI services are scoped per user).</summary>
     public IReadOnlyList<AIFunction> Tools { get; }
+
+    /// <summary>Root provider, for tests that need scopes of their own.</summary>
+    public IServiceProvider Services => _factory.Services;
 
     public AppFixture()
     {
@@ -50,7 +55,8 @@ public sealed class AppFixture : IDisposable
                 throw new InvalidOperationException("Database update failed.");
         }
 
-        Tools = _factory.Services.GetRequiredService<AIToolsProvider>().Tools;
+        _scope = _factory.Services.CreateScope();
+        Tools = _scope.ServiceProvider.GetRequiredService<AIToolsProvider>().Tools;
     }
 
     /// <summary>Invoke a tool by name with an anonymous-object argument bag; returns the parsed JSON result.</summary>
@@ -74,7 +80,11 @@ public sealed class AppFixture : IDisposable
         cmd.ExecuteNonQuery();
     }
 
-    public void Dispose() => _factory.Dispose();
+    public void Dispose()
+    {
+        _scope.Dispose();
+        _factory.Dispose();
+    }
 }
 
 [CollectionDefinition(nameof(AppCollection))]

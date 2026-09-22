@@ -21,6 +21,7 @@ namespace XafTornado.Blazor.Server.Controllers
     {
         private const string AiFilterKey = "AIFilter";
         private BlazorNavigationService _navService;
+        private AIToolsProvider _toolsProvider;
         private ILogger _logger;
 
         public NavigationExecutorController()
@@ -42,10 +43,23 @@ namespace XafTornado.Blazor.Server.Controllers
                 _navService.OnSaveRequested += OnSaveRequested;
                 _navService.OnCloseRequested += OnCloseRequested;
             }
+
+            // Tool bodies run on the circuit's synchronization context, like the executor's own work.
+            if (Application is BlazorApplication blazorApp)
+            {
+                _toolsProvider = Application.ServiceProvider.GetService<AIToolsProvider>();
+                if (_toolsProvider != null)
+                    _toolsProvider.Dispatch = body => blazorApp.InvokeAsync(body);
+            }
         }
 
         protected override void OnDeactivated()
         {
+            if (_toolsProvider != null)
+            {
+                _toolsProvider.Dispatch = null;
+                _toolsProvider = null;
+            }
             if (_navService != null)
             {
                 _navService.OnNavigationRequested -= OnNavigationRequested;
