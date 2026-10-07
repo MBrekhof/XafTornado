@@ -424,7 +424,8 @@ namespace XafTornado.Module.Services
                 ? catalog
                 : new ChatModel(modelId, provider);
 
-        private LLmProviders ResolveProvider(string modelId)
+        /// <summary>Provider by model-id prefix; null when no prefix matches (caller falls back to DefaultProvider).</summary>
+        public static LLmProviders? ProviderFromModelId(string modelId)
         {
             if (modelId.StartsWith("claude", StringComparison.OrdinalIgnoreCase)) return LLmProviders.Anthropic;
             if (modelId.StartsWith("gpt", StringComparison.OrdinalIgnoreCase)) return LLmProviders.OpenAi;
@@ -432,9 +433,14 @@ namespace XafTornado.Module.Services
             if (modelId.StartsWith("o4", StringComparison.OrdinalIgnoreCase)) return LLmProviders.OpenAi;
             if (modelId.StartsWith("gemini", StringComparison.OrdinalIgnoreCase)) return LLmProviders.Google;
             if (modelId.StartsWith("mistral", StringComparison.OrdinalIgnoreCase)) return LLmProviders.Mistral;
-
-            return TornadoApiProvider.MapProvider(_options.DefaultProvider) ?? LLmProviders.Anthropic;
+            if (modelId.StartsWith("ministral", StringComparison.OrdinalIgnoreCase)) return LLmProviders.Mistral;
+            return null;
         }
+
+        private LLmProviders ResolveProvider(string modelId) =>
+            ProviderFromModelId(modelId)
+            ?? TornadoApiProvider.MapProvider(_options.DefaultProvider)
+            ?? LLmProviders.Anthropic;
 
         public void Dispose()
         {

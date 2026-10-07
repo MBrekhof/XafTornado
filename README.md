@@ -195,7 +195,7 @@ Selectable at runtime via the model switcher toolbar action:
 | Anthropic | Claude Fable 5.1, Claude Opus 5, Claude Sonnet 5, Claude Sonnet 4.6 (default), Claude Opus 4.8 |
 | OpenAI | GPT-6 Astra, GPT-5.5, GPT-5 Mini |
 | Google | Gemini 2.5 Pro, Gemini 2.5 Flash |
-| Mistral | Mistral Large |
+| Mistral | Mistral Large, Ministral 8B |
 
 ## Example Prompts
 
