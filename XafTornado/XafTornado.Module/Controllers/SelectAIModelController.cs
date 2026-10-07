@@ -21,7 +21,7 @@ namespace XafTornado.Module.Controllers
         /// model the installed LlmTornado does not recognise (3.8.68 added the Claude 5 header
         /// logic). <see cref="AIOptions.Model"/> stays the default; nothing here changes it.
         /// </summary>
-        private static readonly string[] AvailableModels = new string[]   // ChatModel -> string is implicit
+        public static readonly string[] AvailableModels = new string[]   // ChatModel -> string is implicit
         {
             // Anthropic
             ChatModelAnthropicClaude5.ModelFable51,
@@ -36,8 +36,9 @@ namespace XafTornado.Module.Controllers
             // Google
             "gemini-2.5-pro",
             "gemini-2.5-flash",
-            // Mistral
+            // Mistral (Large is tier-locked on free accounts; Ministral 8B is not, AI-012)
             "mistral-large-latest",
+            "ministral-8b-latest",
         };
 
         public SelectAIModelController()

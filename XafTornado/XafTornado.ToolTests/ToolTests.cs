@@ -64,6 +64,30 @@ public class SchemaToolTests(AppFixture app)
     }
 }
 
+/// <summary>AI-012: every picker id must route to its own provider, never to DefaultProvider.</summary>
+public class ProviderFromModelIdTests
+{
+    [Theory]
+    [InlineData("ministral-8b-latest", LlmTornado.Code.LLmProviders.Mistral)]
+    [InlineData("mistral-large-latest", LlmTornado.Code.LLmProviders.Mistral)]
+    [InlineData("claude-sonnet-4-6", LlmTornado.Code.LLmProviders.Anthropic)]
+    [InlineData("gpt-5.5", LlmTornado.Code.LLmProviders.OpenAi)]
+    [InlineData("gemini-2.5-pro", LlmTornado.Code.LLmProviders.Google)]
+    public void KnownPrefix_ResolvesProvider(string modelId, LlmTornado.Code.LLmProviders expected)
+        => Assert.Equal(expected, AIChatService.ProviderFromModelId(modelId));
+
+    [Fact]
+    public void UnknownId_IsNull()
+        => Assert.Null(AIChatService.ProviderFromModelId("llama-3"));
+
+    [Fact]
+    public void EveryPickerId_HasAProvider()
+    {
+        foreach (var id in XafTornado.Module.Controllers.SelectAIModelController.AvailableModels)
+            Assert.True(AIChatService.ProviderFromModelId(id) != null, $"{id} would fall back to DefaultProvider");
+    }
+}
+
 [Collection(nameof(AppCollection))]
 public class QueryEntityTests(AppFixture app)
 {
