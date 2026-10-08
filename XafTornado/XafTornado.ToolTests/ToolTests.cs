@@ -52,14 +52,14 @@ public class SchemaToolTests(AppFixture app)
     }
 
     [Fact]
-    public async Task ToolSet_HasAllTwelveTools()
+    public async Task ToolSet_HasAllThirteenTools()
     {
         var names = app.Tools.Select(t => t.Name).OrderBy(n => n).ToArray();
         Assert.Equal(
         [
             "clear_active_list_filter", "close_active_view", "create_entity", "describe_entity",
-            "filter_active_list", "get_active_view", "list_entities", "navigate_to_detail",
-            "navigate_to_list", "query_entity", "save_active_view", "update_entity",
+            "filter_active_list", "get_active_view", "get_current_user_permissions", "list_entities",
+            "navigate_to_detail", "navigate_to_list", "query_entity", "save_active_view", "update_entity",
         ], names);
     }
 }

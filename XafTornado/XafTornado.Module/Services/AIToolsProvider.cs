@@ -72,6 +72,7 @@ namespace XafTornado.Module.Services
                 Tool(DescribeEntity, "describe_entity"),
                 Tool(QueryEntity, "query_entity"),
                 Tool(CreateEntity, "create_entity"),
+                Tool(GetCurrentUserPermissions, "get_current_user_permissions"),
             };
 
             if (_navigationService != null)
@@ -410,6 +411,66 @@ namespace XafTornado.Module.Services
                 return Error($"Error listing entities: {ex.Message}");
             }
         }
+
+        [Description("Lists the signed-in user's name, roles and type-level permissions (read/create/write/delete) for every AI-visible entity, or for one entity when entityName is given. Call it when the user asks what they can do, or before a plan that creates or updates records, so you don't attempt operations that will be denied. Row- and member-level rules can still narrow a true flag. Returns JSON.")]
+        private string GetCurrentUserPermissions(
+            [Description("Optional entity name to check (e.g. 'Customer'). Omit for all entities.")] string entityName = null)
+        {
+            _logger.LogInformation("[Tool:get_current_user_permissions] Called with entity={Entity}", entityName);
+            try
+            {
+                var entities = _schemaService.Schema.Entities;
+                if (!string.IsNullOrWhiteSpace(entityName))
+                {
+                    var one = _schemaService.Schema.FindEntity(entityName);
+                    if (one == null) return UnknownEntity(entityName);
+                    entities = [one];
+                }
+
+                const string note = "Type-level permissions as of sign-in; a flag is true when some rows or members allow the operation, so row- and member-level rules can still hide rows or members. " +
+                                    "A type with no explicit permission may show read: true because XAF grants an implicit read on referenced objects, yet query_entity returns no rows; " +
+                                    "write: true can come from an association alone (linking records to this type) while its own fields stay read-only.";
+
+                var security = Security;
+                // AI-011: no security system (or an empty schema, before XAF types are registered) answers
+                // without an object space; the flags then mirror the helpers' "?? true".
+                if (security == null || entities.Count == 0)
+                    return Json(new
+                    {
+                        user = security?.UserName,
+                        roles = RoleNames(security?.User),
+                        entities = entities.Select(e => new { name = e.Name, read = true, create = true, write = true, delete = true }).ToList(),
+                        note,
+                    });
+
+                using var sos = GetObjectSpace(entities[0].ClrType);   // one DbContext: valid for every entity type
+                var os = sos.Os;
+                // ponytail: roles are the sign-in user's (XAF keeps that object for the session); re-reading
+                // them through the secured space hides roles the user may not read (Default role: []).
+                return Json(new
+                {
+                    user = security.UserName,
+                    roles = RoleNames(security.User),
+                    entities = entities.Select(e => new
+                    {
+                        name = e.Name,
+                        read = security.CanRead(e.ClrType, os),
+                        create = security.CanCreate(e.ClrType, os),
+                        write = security.CanWrite(e.ClrType, os),
+                        delete = security.CanDelete(e.ClrType, os),
+                    }).ToList(),
+                    note,
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "[Tool:get_current_user_permissions] Error");
+                return Error($"Error reading permissions: {ex.Message}");
+            }
+        }
+
+        private static List<string> RoleNames(object user) =>
+            (user as ISecurityUserWithRoles)?.Roles?.Select(r => r.Name).ToList();
 
         [Description("Get full schema details for a single entity — properties, types, relationships, and enum values. Call this before querying or creating records of an unfamiliar entity. Returns JSON.")]
         private string DescribeEntity(

@@ -5,7 +5,7 @@ Integrating [LLMTornado](https://github.com/lofcz/LlmTornado) into a DevExpress 
 ## Features
 
 - **Dynamic Schema Discovery** — The AI assistant automatically discovers all entities, properties, relationships, and enum values at runtime via XAF `ITypesInfo` reflection. Add or modify business objects and the AI immediately knows about them.
-- **12 AI Tools** — Generic data tools (`list_entities`, `describe_entity`, `query_entity`, `create_entity`, `update_entity`), navigation tools (`navigate_to_list`, `navigate_to_detail`), view management (`filter_active_list`, `clear_active_list_filter`, `save_active_view`, `close_active_view`), and context awareness (`get_active_view`). Every tool returns JSON; records carry their `id`, so follow-up calls address real keys instead of guessing by name.
+- **13 AI Tools** — Generic data tools (`list_entities`, `describe_entity`, `query_entity`, `create_entity`, `update_entity`), navigation tools (`navigate_to_list`, `navigate_to_detail`), view management (`filter_active_list`, `clear_active_list_filter`, `save_active_view`, `close_active_view`), and context awareness (`get_active_view`, `get_current_user_permissions`). Every tool returns JSON; records carry their `id`, so follow-up calls address real keys instead of guessing by name.
 - **Active View Awareness** — The AI knows what the user is currently viewing (entity, list vs. detail, current record) and can act on it contextually ("filter this list", "save this record", "close this view").
 - **Navigation & Filtering** — The AI can navigate the application to any list or detail view and apply DevExpress criteria filters on the active list — all from natural language.
 - **Conversation History** — Full conversation continuity across messages (up to 50 message pairs), so the AI remembers previous questions and answers within a session.
@@ -16,7 +16,7 @@ Integrating [LLMTornado](https://github.com/lofcz/LlmTornado) into a DevExpress 
 - **Dual Platform** — Full support for both Blazor Server and WinForms using DevExpress AI chat controls (`DxAIChat` and `AIChatControl`), backed by the same shared module.
 - **Markdown Rendering** — AI responses rendered as formatted HTML with table, code block, and list support via Markdig + HtmlSanitizer.
 - **Runtime Model Switching** — Switch between AI models (Claude Fable 5.1, Claude Sonnet 4.6, GPT-6 Astra, Gemini 2.5 Pro, etc.) at runtime via a toolbar action.
-- **Tested at three levels** — 59 tool-level xUnit tests on real PostgreSQL (including per-user isolation and permission tests), a Playwright smoke test, and trace-based LLM evals that assert on which tools the model called. See [Testing](#testing).
+- **Tested at three levels** — 71 tool-level xUnit tests on real PostgreSQL (including per-user isolation and permission tests), a Playwright smoke test, and trace-based LLM evals that assert on which tools the model called. See [Testing](#testing).
 - **Multi-user safe** — every piece of per-user AI state is scoped to the Blazor circuit (or the WinForms application), tools read and write through the calling user's secured ObjectSpace, and UI tools report what the window actually did. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Architecture
@@ -33,7 +33,7 @@ XafTornado.Module/          Platform-agnostic core (business objects, services, 
     SchemaDiscoveryService        Discovers entities via ITypesInfo, generates system prompt
     AIChatService                 Manages TornadoApi lifecycle, conversation history, tool loop
     AIChatClient                  IChatClient adapter for DevExpress AI controls
-    AIToolsProvider               12 AI tools (data, navigation, view management, context)
+    AIToolsProvider               13 AI tools (data, navigation, view management, context)
     ActiveViewContext             Tracks what the user is currently viewing
     AIChatDefaults                Shared UI config, prompt suggestions, Markdown rendering
     AIOptions                     Configuration model bound from appsettings.json
@@ -61,7 +61,7 @@ XafTornado.Win/             WinForms UI
     WinNavigationExecutorController  Runs UI requests on the WinForms UI thread
   Editors/                        AIChatControl integration (ViewItem wrapper)
 
-XafTornado.ToolTests/       24 xUnit tests — tools invoked as the model invokes them, real PostgreSQL
+XafTornado.ToolTests/       71 xUnit tests — tools invoked as the model invokes them, real PostgreSQL
 XafTornado.Smoke/           Playwright smoke test (login → list → AI panel → tool call)
 XafTornado.Tests/           YAML runner for LLM evals (tests/llm-evals.yaml)
 scripts/smoke.ps1           Update DB → start app → smoke test → stop app
@@ -74,7 +74,7 @@ DOCS/                       TESTING.md (strategy), PHASE3.md (next work), REVIEW
 
 2. **Multi-Provider Init** — `AIChatService` lazy-initializes a `TornadoApi` client from API keys configured in `appsettings.json` (or `appsettings.Development.json` for local keys). Multiple providers can be configured simultaneously; the correct one is auto-selected based on the model name prefix.
 
-3. **AI Tools** — `AIToolsProvider` exposes 12 tools to the LLM. Each returns one JSON object; errors are `{ "error": "...", ...hints }` (e.g. `availableEntities`, `availableProperties`):
+3. **AI Tools** — `AIToolsProvider` exposes 13 tools to the LLM. Each returns one JSON object; errors are `{ "error": "...", ...hints }` (e.g. `availableEntities`, `availableProperties`):
    - `list_entities` — All entity names with descriptions, property names and relationships
    - `describe_entity` — Full schema for one entity (typed properties, required flags, relationships, enum values)
    - `query_entity` — `{ entity, count, truncated?, records: [{ id, ...properties, ...references }] }` with optional `PropertyName=value` filters
@@ -84,6 +84,7 @@ DOCS/                       TESTING.md (strategy), PHASE3.md (next work), REVIEW
    - `filter_active_list` / `clear_active_list_filter` — Apply or clear DevExpress criteria filters
    - `save_active_view` / `close_active_view` — Save or close the current view
    - `get_active_view` — Returns what the user is currently viewing
+   - `get_current_user_permissions` — `{ user, roles, entities: [{ name, read, create, write, delete }], note }`, type-level flags from the user's XAF roles; optional `entityName`
 
 4. **Native Tool Loop** — `AIChatService.AskAsync()` sends the user's message with full conversation history, receives the response via `GetResponseRich()`, and executes any tool calls in a loop (up to `MaxToolIterations`). Tool results are fed back to the LLM until it produces a final text response. The turn's tool calls are kept in `AIChatService.LastToolCalls` — that is what the LLM evals assert on.
 
@@ -282,7 +283,7 @@ Three layers, described in [DOCS/TESTING.md](DOCS/TESTING.md). What gets tested 
 
 | Layer | Command | Time | Needs |
 |-------|---------|------|-------|
-| Tool-level (24 xUnit tests, tools invoked exactly as the model invokes them, assertions on JSON fields) | `dotnet test XafTornado/XafTornado.ToolTests` | ~10 s | PostgreSQL |
+| Tool-level (71 xUnit tests, tools invoked exactly as the model invokes them, assertions on JSON fields) | `dotnet test XafTornado/XafTornado.ToolTests` | ~10 s | PostgreSQL |
 | Smoke (Playwright: login → list view → AI panel → tool call) | `powershell -File scripts/smoke.ps1` | ~30 s | PostgreSQL |
 | LLM evals (prompt → assert on the **tool-call trace**, not the wording) | `dotnet run --project XafTornado/XafTornado.Tests -- tests/llm-evals.yaml` | ~1 min | running app + API key |
 

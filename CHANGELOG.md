@@ -2,6 +2,10 @@
 
 All notable changes to XafTornado. Card ids (`SEC-001`, `AI-007`, ...) refer to the ContextBoard project; PR numbers to this repository.
 
+## 2026-10-08 — Permissions tool
+
+- **AI-011** — `get_current_user_permissions` tool: the signed-in user's name, roles and type-level read/create/write/delete flags for every AI-visible entity (or one, via `entityName`), computed with the same `IsGrantedExtensions` checks the data tools use. The system prompt tells the model to call it when asked "what can I do?" and before a multi-step write. The result notes that row-, member- and association-level rules can widen or narrow a flag. 13 tools, 71 tool-level tests.
+
 ## 2026-09-22 — Multi-user hardening
 
 Starting point: a Codex review of `master` found the AI integration unsafe for more than one user. Every finding was reproduced, carded, fixed and re-reviewed by Codex before merging. The plan is in [DOCS/PLAN-2026-09-22-multiuser.md](DOCS/PLAN-2026-09-22-multiuser.md).

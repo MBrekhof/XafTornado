@@ -51,3 +51,10 @@ steps:
         - tool: describe_entity
           with: { entityName: Invoice }
       not_called: [query_entity]
+
+  - name: What may I do → get_current_user_permissions (AI-011)
+    say: "What am I allowed to do here?"
+    assert:
+      called:
+        - tool: get_current_user_permissions
+      not_called: [create_entity, update_entity]
