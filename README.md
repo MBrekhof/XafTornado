@@ -289,6 +289,10 @@ Three layers, described in [DOCS/TESTING.md](DOCS/TESTING.md). What gets tested 
 
 ## Changelog
 
+**2026-10-08** — `get_current_user_permissions` tool (AI-011): the signed-in user's roles and type-level read/create/write/delete flags per AI-visible entity, so the assistant can answer "what can I do?" before starting work that would be denied. 13 tools, 71 tool-level tests.
+
+**2026-10-07** — Ministral 8B in the model picker (AI-012).
+
 **2026-09-22** — Multi-user hardening after a Codex review: per-user AI services, secured ObjectSpace with permission checks, truthful UI tools, per-user log panel; plus Claude 5 in the model picker, LlmTornado 3.8.68, DevExpress 26.1.5 and pinned packages. Details in [CHANGELOG.md](CHANGELOG.md).
 
 ## Roadmap
