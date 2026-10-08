@@ -9,7 +9,7 @@ layer** — schema discovery, filter parsing, create/update mapping, navigation 
 
 | # | Layer | Tool | Needs | Runs when |
 |---|-------|------|-------|-----------|
-| 1 | **Tool-level tests** (`XafTornado.ToolTests`, 24 tests) — invoke tools through `AIFunction.InvokeAsync` exactly like the model does, assert on JSON fields | xUnit, `WebApplicationFactory<Program>`, real PostgreSQL `xaftornado_test` dropped/recreated/seeded via `IDBUpdater` once per run | Docker `xaf-postgres` | every `dotnet test` |
+| 1 | **Tool-level tests** (`XafTornado.ToolTests`, 71 tests) — invoke tools through `AIFunction.InvokeAsync` exactly like the model does, assert on JSON fields | xUnit, `WebApplicationFactory<Program>`, real PostgreSQL `xaftornado_test` dropped/recreated/seeded via `IDBUpdater` once per run | Docker `xaf-postgres` | every `dotnet test` |
 | 2 | **Smoke test** (`XafTornado.Smoke`, 1 test) — login → list view has rows → AI panel → one tool call via `/api/test/tool` | C# Playwright (`Microsoft.Playwright.NUnit`); `scripts/smoke.ps1` updates the DB, starts the app, runs it, stops the app | Docker `xaf-postgres`; Debug build | before a PR that touches startup/config/packages |
 | 3 | **LLM evals** (`tests/llm-evals.yaml`, 6 prompts) — natural-language prompt → assert on the **tool-call trace** (`called:` / `not_called:` with argument matching), not the prose | YAML runner (`XafTornado.Tests`) via `/api/test/ask`, which returns the turn's tool calls | running app (Debug) + provider API key | opt-in / manual |
 

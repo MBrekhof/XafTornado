@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using Xunit;
 
 namespace XafTornado.ToolTests;
@@ -100,5 +101,66 @@ public class SecurityTests(AppFixture app)
         var r = await app.Invoke("query_entity", new { entityName = "Customer", top = 1000 });
         Assert.Equal(20, r["count"]!.GetValue<int>());
         Assert.Null(r["error"]);
+    }
+
+    // AI-011: get_current_user_permissions answers before the model tries and fails.
+
+    private static (bool read, bool create, bool write, bool delete) Flags(JsonNode entity) =>
+        (entity["read"]!.GetValue<bool>(), entity["create"]!.GetValue<bool>(), entity["write"]!.GetValue<bool>(), entity["delete"]!.GetValue<bool>());
+
+    [Fact]
+    public async Task Permissions_Admin_AllTrue()
+    {
+        var r = await app.Invoke("get_current_user_permissions");
+        Assert.Equal("Admin", r["user"]!.GetValue<string>());
+        Assert.Contains("Administrators", r["roles"]!.AsArray().Select(x => x!.GetValue<string>()));
+        var entities = r["entities"]!.AsArray();
+        Assert.NotEmpty(entities);
+        Assert.All(entities, e => Assert.Equal((true, true, true, true), Flags(e!)));
+    }
+
+    [Fact]
+    public async Task Permissions_DefaultRole_AllFalse()
+    {
+        var r = await app.InvokeAs("User", "get_current_user_permissions");
+        Assert.Equal("User", r["user"]!.GetValue<string>());
+        Assert.Equal(["Default"], r["roles"]!.AsArray().Select(x => x!.GetValue<string>()).ToArray());
+        var entities = r["entities"]!.AsArray();
+        Assert.NotEmpty(entities);
+        Assert.All(entities, e => Assert.Equal((false, false, false, false), Flags(e!)));
+        Assert.NotNull(r["note"]);
+    }
+
+    [Fact]
+    public async Task Permissions_Reader_ReadOnlyOnCustomer()
+    {
+        var r = await app.InvokeAs(AppFixture.Reader, "get_current_user_permissions", new { entityName = "customer" });
+        Assert.Equal(["Reader"], r["roles"]!.AsArray().Select(x => x!.GetValue<string>()).ToArray());
+        var entity = Assert.Single(r["entities"]!.AsArray());
+        Assert.Equal("Customer", entity!["name"]!.GetValue<string>());
+        Assert.Equal((true, false, false, false), Flags(entity));
+    }
+
+    [Fact]
+    public async Task Permissions_Orders_ExplicitDenyShowsFalse()
+    {
+        var r = await app.InvokeAs(AppFixture.Orders, "get_current_user_permissions");
+        var byName = r["entities"]!.AsArray().ToDictionary(e => e!["name"]!.GetValue<string>(), e => e!);
+        // Employee: Read explicitly denied. Write is true on Employee and Customer because the role's
+        // CRUD on Order gives an automatic association permission on their Orders collections
+        // (AssociationPermissionsMode.Auto) — XAF's own type-level answer, which the tool reports as
+        // is and explains in `note`. Reader (no Order access) shows Customer write false above.
+        Assert.Equal((false, false, true, false), Flags(byName["Employee"]));
+        Assert.Equal((true, true, true, true), Flags(byName["Order"]));
+        Assert.Equal((true, false, true, false), Flags(byName["Customer"]));
+    }
+
+    [Fact]
+    public async Task Permissions_UnknownEntity_ReturnsError()
+    {
+        var r = await app.Invoke("get_current_user_permissions", new { entityName = "Nope" });
+        Assert.NotNull(r["error"]);
+        Assert.NotNull(r["availableEntities"]);
+        Assert.Null(r["entities"]);
     }
 }

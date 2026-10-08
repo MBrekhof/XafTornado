@@ -51,7 +51,12 @@ namespace XafTornado.Module.Services
             // Use Case 5 — Create an Order
             new("Create Order",
                 "Conversational order entry via AI",
-                "Create a new order for customer Alfreds Futterkiste: 10 units of Chai and 5 units of Chang, ship via Speedy Express")
+                "Create a new order for customer Alfreds Futterkiste: 10 units of Chai and 5 units of Chang, ship via Speedy Express"),
+
+            // Use Case 6 — What may I do here? (AI-011)
+            new("My Permissions",
+                "What the assistant may read and change for you",
+                "What am I allowed to do here?")
         };
 
         // ── System Prompt ─────────────────────────────────────────────────

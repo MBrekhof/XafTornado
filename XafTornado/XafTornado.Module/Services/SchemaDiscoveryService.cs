@@ -98,6 +98,7 @@ namespace XafTornado.Module.Services
             sb.AppendLine("7. Call `clear_active_list_filter` to remove the filter and show all records again.");
             sb.AppendLine("8. Call `save_active_view` to save changes in the current detail view.");
             sb.AppendLine("9. Call `close_active_view` to close the current view and return to the previous one.");
+            sb.AppendLine("10. Call `get_current_user_permissions` when the user asks what they are allowed to do, or before a multi-step plan that creates or updates records, so you don't start work that will be denied.");
             sb.AppendLine();
             sb.AppendLine("Behavior guidelines:");
             sb.AppendLine("- All tools return JSON. `query_entity` records include an `id` — pass it to `navigate_to_detail` or `update_entity` instead of guessing by name.");
