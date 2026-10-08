@@ -6,6 +6,11 @@ All notable changes to XafTornado. Card ids (`SEC-001`, `AI-007`, ...) refer to 
 
 - **AI-011** — `get_current_user_permissions` tool: the signed-in user's name, roles and type-level read/create/write/delete flags for every AI-visible entity (or one, via `entityName`), computed with the same `IsGrantedExtensions` checks the data tools use. The system prompt tells the model to call it when asked "what can I do?" and before a multi-step write. The result notes that row-, member- and association-level rules can widen or narrow a flag. 13 tools, 71 tool-level tests.
 
+## 2026-10-07 — Ministral in the picker
+
+- **AI-012 (PR #22)** — `ministral-8b-latest` added to the model picker; ids starting with `ministral` route to Mistral, like `mistral-*` ids (`ProviderFromModelId`). Mistral Large stays listed but is tier-locked on free accounts (403 `tier_not_allowed`).
+- **PR #23 / #24** — WinForms default model briefly set to `claude-opus-5-5`, reverted the same evening: the id is unverified, the default stays `claude-sonnet-4-6`.
+
 ## 2026-09-22 — Multi-user hardening
 
 Starting point: a Codex review of `master` found the AI integration unsafe for more than one user. Every finding was reproduced, carded, fixed and re-reviewed by Codex before merging. The plan is in [DOCS/PLAN-2026-09-22-multiuser.md](DOCS/PLAN-2026-09-22-multiuser.md).
