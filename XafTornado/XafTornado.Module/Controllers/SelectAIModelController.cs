@@ -19,16 +19,19 @@ namespace XafTornado.Module.Controllers
         /// Models available through LLMTornado (multi-provider), native provider model IDs.
         /// Claude 5 entries come from the library's typed constants so the picker cannot offer a
         /// model the installed LlmTornado does not recognise (3.8.68 added the Claude 5 header
-        /// logic). <see cref="AIOptions.Model"/> stays the default; nothing here changes it.
+        /// logic, 3.8.8x the 5.5 generation). <see cref="AIOptions.Model"/> stays the default;
+        /// nothing here changes it.
         /// </summary>
         public static readonly string[] AvailableModels = new string[]   // ChatModel -> string is implicit
         {
             // Anthropic
             ChatModelAnthropicClaude5.ModelFable51,
+            ChatModelAnthropicClaude5.ModelOpus55,
+            ChatModelAnthropicClaude5.ModelSonnet55,
+            ChatModelAnthropicClaude5.ModelHaiku55,
             ChatModelAnthropicClaude5.ModelOpus,
             ChatModelAnthropicClaude5.ModelSonnet,
             "claude-sonnet-4-6",
-            ChatModelAnthropicClaude48.ModelOpus,
             // OpenAI (ids verified against the models endpoint on 2026-09-22)
             ChatModelOpenAiGpt6.ModelV6Astra,
             "gpt-5.5",
