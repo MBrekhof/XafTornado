@@ -280,14 +280,14 @@ namespace XafTornado.Module.Services
             // Log token usage if available
             if (response?.Usage != null)
             {
-                _logger.LogInformation("[AskAsync] Tokens — input: {In}, output: {Out}",
-                    response.Usage.PromptTokens, response.Usage.CompletionTokens);
+                _logger.LogInformation("[AskAsync] Tokens — input: {In}, output: {Out}, cache read: {CacheRead}",
+                    response.Usage.PromptTokens, response.Usage.CompletionTokens, response.Usage.CacheReadTokens ?? 0);
             }
 
             _logger.LogInformation("[AskAsync] Response: {Len} chars, {Iterations} tool iterations",
                 finalText.Length, toolIterations);
             _log?.Add(_turnLogGeneration, LogLevel.Information, "Chat", $"Response: {finalText.Length} chars, {toolIterations} tool iterations" +
-                (response?.Usage != null ? $", tokens in={response.Usage.PromptTokens} out={response.Usage.CompletionTokens}" : ""));
+                (response?.Usage != null ? $", tokens in={response.Usage.PromptTokens} out={response.Usage.CompletionTokens} cache-read={response.Usage.CacheReadTokens ?? 0}" : ""));
 
             return string.IsNullOrEmpty(finalText)
                 ? "No response received from the AI model. Please try again."

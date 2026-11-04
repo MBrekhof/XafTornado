@@ -2,6 +2,11 @@
 
 All notable changes to XafTornado. Card ids (`SEC-001`, `AI-007`, ...) refer to the ContextBoard project; PR numbers to this repository.
 
+## 2026-11-04 — LlmTornado 3.8.82, DevExpress 26.1.6
+
+- **AI-013** — LlmTornado 3.8.68 → 3.8.82 (twelve upstream releases; what they change for us is in [DOCS/REVIEW-2026-11-04-llmtornado.md](DOCS/REVIEW-2026-11-04-llmtornado.md)). Model picker: Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5 added from the library's typed constants; Claude Opus 4.8 removed. The usage log lines report cache-read tokens next to input and output. Verified with the 71 tool tests and the 7 LLM evals on gpt-5.5, claude-sonnet-5-5 and ministral-8b-latest.
+- **DX-261-6** — DevExpress 26.1.5 → 26.1.6 in all three projects (the 26.1.6 install had emptied the 26.1.5 offline packages).
+
 ## 2026-10-08 — Permissions tool
 
 - **AI-011** — `get_current_user_permissions` tool: the signed-in user's name, roles and type-level read/create/write/delete flags for every AI-visible entity (or one, via `entityName`), computed with the same `IsGrantedExtensions` checks the data tools use. The system prompt tells the model to call it when asked "what can I do?" and before a multi-step write. The result notes that row-, member- and association-level rules can widen or narrow a flag. 13 tools, 71 tool-level tests.

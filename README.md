@@ -193,7 +193,7 @@ Selectable at runtime via the model switcher toolbar action:
 
 | Provider | Models |
 |----------|--------|
-| Anthropic | Claude Fable 5.1, Claude Opus 5, Claude Sonnet 5, Claude Sonnet 4.6 (default), Claude Opus 4.8 |
+| Anthropic | Claude Fable 5.1, Claude Opus 5.5, Claude Sonnet 5.5, Claude Haiku 5.5, Claude Opus 5, Claude Sonnet 5, Claude Sonnet 4.6 (default) |
 | OpenAI | GPT-6 Astra, GPT-5.5, GPT-5 Mini |
 | Google | Gemini 2.5 Pro, Gemini 2.5 Flash |
 | Mistral | Mistral Large, Ministral 8B |
@@ -288,6 +288,8 @@ Three layers, described in [DOCS/TESTING.md](DOCS/TESTING.md). What gets tested 
 | LLM evals (prompt → assert on the **tool-call trace**, not the wording) | `dotnet run --project XafTornado/XafTornado.Tests -- tests/llm-evals.yaml` | ~1 min | running app + API key |
 
 ## Changelog
+
+**2026-11-04** — LlmTornado 3.8.82 and DevExpress 26.1.6 (AI-013, DX-261-6): Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5 in the model picker, Claude Opus 4.8 removed, cache-read tokens in the usage log. Upstream changes reviewed in [DOCS/REVIEW-2026-11-04-llmtornado.md](DOCS/REVIEW-2026-11-04-llmtornado.md).
 
 **2026-10-08** — `get_current_user_permissions` tool (AI-011): the signed-in user's roles and type-level read/create/write/delete flags per AI-visible entity, so the assistant can answer "what can I do?" before starting work that would be denied. 13 tools, 71 tool-level tests.
 
